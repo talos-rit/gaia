@@ -21,17 +21,15 @@ components:
     runTests: true # run the CppUTest suite during the image build; a failing test means no image
 
   vision:
-    # TEMPORARY (see TODO.md): this is the exact Pi-Vision that ran in the Nov 3-5 demo containers,
-    # Commander's tools/pi_tracker copy. The canonical source is the pi-vision repo; switch back to
-    #   source: { mode: git, repo: https://github.com/talos-rit/pi-vision.git, ref: master }
-    #   appDir: .   model: yolo11n-pose-320.onnx   extraArgs: []
-    # once pi-vision has the dual-arm integration (controller-profile relay, inference cap).
-    source: { mode: git, repo: https://github.com/talos-rit/commander.git, ref: feat/dual-arm-containers }
-    appDir: tools/pi_tracker # directory containing main.py, relative to the repo root
-    model: assets/yolo/yolo11n-pose-192.onnx # pose model, relative to the repo root
+    # Canonical Pi-Vision is the pi-vision repo. Until feat/dual-arm-integration is merged,
+    # build that branch (master lacks the controller-profile relay Commander needs and
+    # --processing-width); switch ref to master after the merge.
+    source: { mode: git, repo: https://github.com/talos-rit/pi-vision.git, ref: feat/dual-arm-integration }
+    appDir: . # directory containing main.py, relative to the repo root
+    model: yolo11n-pose-320.onnx # pose model, relative to the repo root (320 for small/distant people)
     extraArgs: [--processing-width, "640"] # appended to `python main.py --model ... --port ... --edge-control`
     env:
-      POSE_THREADS: "1" # onnxruntime intra-op threads
+      POSE_THREADS: "2" # onnxruntime intra-op threads; 2 gives ~3.5 fps on a Pi 4 with the 320 model
       POSE_SPINNING: "0"
 
   camera:

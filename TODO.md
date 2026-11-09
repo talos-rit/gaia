@@ -10,7 +10,7 @@ What Gaia deploys right now, chosen to reproduce the Nov 5 demo exactly:
 | Component | Source | Why |
 |---|---|---|
 | Operator | `operator` @ `feat/dual-arm-containers` | what the demo ran |
-| Pi-Vision | `commander` @ `feat/dual-arm-containers`, `tools/pi_tracker` | **temporary**: what the demo containers ran (see below) |
+| Pi-Vision | `pi-vision` @ `feat/dual-arm-integration` (local worktree via `gaia.local.yaml` until pushed), 320 model, `POSE_THREADS=2` | canonical repo; 320 for small targets (~3.5 fps accepted 2026-11-09) |
 | Cam Streamer | `cam_streamer` working copy, branch `feat/output-fps` (via `gaia.local.yaml`) | reproduces the demo's ffmpeg command (MJPEG 30 fps in → 10 fps out) |
 | MediaMTX | host systemd service (`mediamtx.service`) | unchanged from before containers |
 
@@ -52,10 +52,13 @@ which crashes the MJPEG dashboard stream whenever a person is detected.
             Tried `POSE_THREADS=2` (2026-11-09, local override): 3.3-3.8 fps, 0.33 s per inference,
             python ~205% CPU, camera still 10.5 fps, 65 °C, no throttling. A small gain for about half a
             core more. Next to try: the 192 model.
-- [ ] Switch `gaia.config.yaml` vision back to `pi-vision` (see the comment there).
+- [x] Switch `gaia.config.yaml` vision to `pi-vision` (2026-11-09; ref `feat/dual-arm-integration`).
+- [ ] After the merge: set the ref to `master` and drop the vision override from `gaia.local.yaml`.
 - [ ] Delete `commander/tools/pi_tracker` (or replace it with a pointer to pi-vision) so this
       can't happen again.
-- [ ] Decide `POSE_THREADS` / inference cap for one arm per Pi (the demo used 1 thread, 4 fps).
+- [x] Decided: 320 model, `POSE_THREADS=2`, `INFERENCE_FPS=4` cap (~3.5 fps actual).
+- [ ] pi-vision README is stale outside the config section (tests via `commander`, `deploy_to_pi.bat`,
+      `MODEL_WEIGHTS=yolo26n.onnx`); `yolo26n.onnx` is a dangling symlink; `__pycache__` is tracked.
 
 ## Cam Streamer
 
@@ -101,6 +104,11 @@ Alternative: ship source to the Pi and `docker build` there, so laptops need onl
   power-on (2026-11-06), then `Illegal Trap` two minutes after homing. If the checkpoint error
   appears on *every* power-on, suspect the controller's backup battery. Its fan bearing is also
   failing (loud).
+
+- Bluey's `bluey.local` stops resolving because avahi hits a **host-name conflict at boot** and
+  renames itself to `bluey-2.local` (seen 2026-11-09; its Ethernet and Wi-Fi were both on the LAN
+  during boot). Troubleshoot › Restart avahi fixed it. If it keeps happening, consider having Gaia
+  detect a `-2` name.
 
 ## Command previews are too noisy (UI)
 
