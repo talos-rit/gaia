@@ -2,7 +2,8 @@ import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { hostname, userInfo } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
-import { ensureRuntime, preflight } from "./actions.ts";
+import { ensureRuntime, syncClock } from "./actions.ts";
+import { HELPER_PATH, helperScript, talos } from "./helper.ts";
 import { COMPONENT_LABEL, COMPONENTS, ROOT, describeSource, type ComponentId, type Config, type PiCfg, type Source } from "./config.ts";
 import type { Job } from "./jobs.ts";
 import { gzip, proc, rel, task, type Stage } from "./pipeline.ts";
@@ -45,11 +46,13 @@ function buildArgs(cfg: Config, c: ComponentId): Record<string, string> {
   const extra = cfg.components[c].buildArgs ?? {};
   if (c === "operator") return { RUN_TESTS: cfg.components.operator.runTests === false ? "0" : "1", ...extra };
   if (c === "vision") return { APP_DIR: cfg.components.vision.appDir || ".", MODEL: cfg.components.vision.model, ...extra };
+  if (c === "mediamtx") return { MEDIAMTX_VERSION: cfg.components.mediamtx.version, ...extra };
   return extra;
 }
 
 function dockerfileHash(c: ComponentId) {
-  const files = [`${c}.Dockerfile`, ...(c === "vision" ? ["vision-requirements.lock"] : [])];
+  const extra: Partial<Record<ComponentId, string[]>> = { vision: ["vision-requirements.lock"], mediamtx: ["mediamtx.yml"] };
+  const files = [`${c}.Dockerfile`, ...(extra[c] ?? [])];
   return sha256(files.map((f) => readFileSync(join(STACK_DIR, f))).join("\0"));
 }
 
@@ -192,7 +195,8 @@ async function prepare(job: Job, cfg: Config, c: ComponentId): Promise<Prepared>
   const ctx = join(CACHE, "ctx", c);
   mkdirSync(ctx, { recursive: true });
   const key = sha256(dockerfileHash(c) + JSON.stringify(buildArgs(cfg, c)));
-  return { component: c, image: `talos/${c}:b${short(key, 8)}`, contextDir: ctx, buildKey: key, source: describeSource(src), buildArgs: buildArgs(cfg, c) };
+  const tag = c === "mediamtx" ? `${cfg.components.mediamtx.version}-${short(key, 6)}` : `b${short(key, 8)}`;
+  return { component: c, image: `talos/${c}:${tag}`, contextDir: ctx, buildKey: key, source: describeSource(src), buildArgs: buildArgs(cfg, c) };
 }
 
 async function build(job: Job, p: Prepared, force: boolean) {
@@ -294,7 +298,7 @@ async function ship(job: Job, pi: PiCfg, image: string, imageId: string) {
     const source: Stage = trim
       ? { kind: "source", display: `read ${file}, minus ${omit.size} layer blobs the Pi already has`, make: () => tarFilter(Bun.file(file).stream(), omit) }
       : { kind: "source", display: `read ${file}`, make: () => Bun.file(file).stream() };
-    const ssh: Stage = { kind: "proc", argv: sshArgv(tgt, remoteCmd), display: sshDisplay(tgt, remoteCmd) };
+    const ssh: Stage = { kind: "proc", argv: sshArgv(pi, tgt, remoteCmd), display: sshDisplay(tgt, remoteCmd) };
     return job.run({ label, where: "local", run: [[source, gzip, ssh]], timeoutMs: 1_800_000, allowFail });
   };
   const res = await send(omit.size > 0, `${pi.name}: transfer ${image} (${ours.length - common}/${ours.length} layers)`, omit.size > 0);
@@ -306,6 +310,7 @@ export function stackFiles(cfg: Config, pi: PiCfg, images: Images, manifest?: Ma
   const files: Record<string, string> = {
     "compose.yaml": composeYaml(cfg, pi, images),
     "operator.conf": operatorConf(pi),
+    [HELPER_PATH]: helperScript(cfg, pi),
   };
   if (manifest) files["gaia-manifest.json"] = JSON.stringify(manifest, null, 2) + "\n";
   const rules = udevRules(pi);
@@ -316,12 +321,15 @@ export function stackFiles(cfg: Config, pi: PiCfg, images: Images, manifest?: Ma
 async function upload(job: Job, cfg: Config, pi: PiCfg, files: Record<string, string>) {
   const dir = join(CACHE, "deploy", pi.id);
   mkdirSync(dir, { recursive: true });
-  for (const [name, body] of Object.entries(files)) writeFileSync(join(dir, name), body);
+  for (const [name, body] of Object.entries(files)) {
+    mkdirSync(dirname(join(dir, name)), { recursive: true });
+    writeFileSync(join(dir, name), body);
+  }
   const tgt = await target(pi);
   const remoteCmd =
     `mkdir -p ~/${cfg.stack.dir}/logs && cd ~/${cfg.stack.dir} && ` +
     `for f in compose.yaml gaia-manifest.json; do [ -f $f ] && cp $f "previous-$f"; done; ` +
-    `tar -xf - && ls -l`;
+    `tar -xf - && chmod 0755 ${HELPER_PATH} && sudo -n ln -sfn "$HOME/${cfg.stack.dir}/${HELPER_PATH}" /usr/local/bin/talos && ls -l`;
   const names = Object.keys(files);
   await job.run({
     label: `${pi.name}: upload stack files to ~/${cfg.stack.dir} (previous compose.yaml kept as previous-compose.yaml)`,
@@ -329,7 +337,7 @@ async function upload(job: Job, cfg: Config, pi: PiCfg, files: Record<string, st
     run: [
       [
         { kind: "source", display: `tar ${names.join(" ")}  (copies in ${dir})`, make: () => new Blob([tarCreate(files) as Uint8Array<ArrayBuffer>]).stream() },
-        { kind: "proc", argv: sshArgv(tgt, remoteCmd), display: sshDisplay(tgt, remoteCmd) },
+        { kind: "proc", argv: sshArgv(pi, tgt, remoteCmd), display: sshDisplay(tgt, remoteCmd) },
       ],
     ],
   });
@@ -362,6 +370,8 @@ export async function deploy(job: Job, cfg: Config, pis: PiCfg[], opts: DeployOp
     for (const f of readdirSync(archiveDir)) if (!keepArchives.has(join(archiveDir, f))) rmSync(join(archiveDir, f), { force: true });
 
   for (const pi of pis) {
+    const clock = syncClock();
+    await job.run({ ...clock, label: `${pi.name}: ${clock.label}` });
     const rt = ensureRuntime(pi);
     await job.run({ ...rt, label: `${pi.name}: ${rt.label}` });
     for (const c of COMPONENTS) await ship(job, pi, images[c], ids[c]);
@@ -383,12 +393,12 @@ export async function deploy(job: Job, cfg: Config, pis: PiCfg[], opts: DeployOp
       cmd: inStack(cfg, `${compose(pi)} config --quiet && echo "compose.yaml is valid"`),
     });
     if (opts.start) {
-      const pf = preflight(cfg, pi);
-      await job.run({ ...pf, label: `${pi.name}: ${pf.label}` });
+      // MediaMTX moved into the stack; the old host service would hold port 8554.
+      await job.run({ label: `${pi.name}: retire the host MediaMTX service, if any`, where: "remote", cmd: talos("retire-host-mediamtx") });
       await job.run({
-        label: `${pi.name}: start (only containers whose image or config changed are recreated)`,
+        label: `${pi.name}: preflight, then start (only containers whose image or config changed are recreated)`,
         where: "remote",
-        cmd: inStack(cfg, `${compose(pi)} up -d --remove-orphans`),
+        cmd: talos("start"),
       });
     }
   }
@@ -418,5 +428,6 @@ export async function resolveSource(cfg: Config, c: ComponentId): Promise<{ text
     const n = st.stdout.split("\n").filter(Boolean).length;
     return { text: `${branch.stdout.trim()} @ ${sha.stdout.trim()}${n ? ` + ${n} uncommitted change${n === 1 ? "" : "s"}` : " (clean)"}`, cmd, ok: true };
   }
+  if (c === "mediamtx") return { text: `bluenviron/mediamtx:${cfg.components.mediamtx.version} + stack/mediamtx.yml`, cmd: "", ok: true };
   return { text: "stack/" + c + ".Dockerfile", cmd: "", ok: true };
 }

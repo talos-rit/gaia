@@ -4,7 +4,7 @@ Read-only: it never connects to Operator's TCP port (Operator accepts a single c
 Pi-Vision is that client). Operator health is inferred from the container, its listening
 socket, its log file, and the arm telemetry that Pi-Vision reports.
 """
-import json, os, re, shutil, subprocess, sys, time, urllib.request
+import hashlib, json, os, re, shutil, subprocess, sys, time, urllib.request
 
 args = json.loads(sys.argv[1])
 DOCKER = args["docker"]  # argv prefix, e.g. ["sudo","-n","/opt/talos-docker/29.8.2/docker","-H","unix:///run/talos-docker.sock"]
@@ -54,8 +54,12 @@ out["host"] = {
     "cma_mb": int(meminfo.get("CmaTotal", 0)) // 1024,
     "disk_free_gb": round(st.f_bavail * st.f_frsize / 1e9, 1),
 }
+# IPv4 addresses, so Gaia can still reach the Pi by IP when <name>.local stops resolving.
+_, so, _ = run(["hostname", "-I"], 2)
+out["host"]["machine_id"] = (read("/etc/machine-id") or "").strip()
+out["host"]["ips"] = [a for a in so.split() if re.match(r"^\d+\.\d+\.\d+\.\d+$", a)]
 
-units = ["mediamtx.service", "camera-streamer.service", "pivision-integration.service", "talos-docker.service"]
+units = ["mediamtx.service", "camera-streamer.service", "pivision-integration.service", "talos-docker.service", "docker.service"]
 _, so, _ = run(["systemctl", "is-active", *units], 3)
 out["units"] = dict(zip(units, (so.split() + ["unknown"] * len(units))[: len(units)]))
 
@@ -63,6 +67,8 @@ out["units"] = dict(zip(units, (so.split() + ["unknown"] * len(units))[: len(uni
 rt = {"kind": args["runtime"], "up": False, "error": None}
 if args["runtime"] == "isolated" and not os.path.exists("/run/talos-docker.sock"):
     rt["error"] = "talos-docker.service is not running"
+elif args["runtime"] == "system" and not shutil.which("docker"):
+    rt["error"] = "Docker is not installed (Troubleshoot > Install Docker)"
 else:
     code, so, se = run([*DOCKER, "ps", "-a", "--no-trunc", "--format", "{{json .}}"], 6)
     if code == 0:
@@ -103,8 +109,25 @@ out["devices"] = {"serial": dev(args["serial"]), "camera": dev(args["camera"]), 
 # ---- deployed stack ----------------------------------------------------------------------
 stack_dir = os.path.expanduser("~/" + args["stack_dir"])
 manifest = read(os.path.join(stack_dir, "gaia-manifest.json"))
+helper = None
+try:
+    with open(os.path.join(stack_dir, "bin", "talos"), "rb") as f:
+        helper = hashlib.sha256(f.read()).hexdigest()
+except OSError:
+    pass
 out["stack"] = {"deployed": os.path.exists(os.path.join(stack_dir, "compose.yaml")),
-                "manifest": json.loads(manifest) if manifest else None}
+                "manifest": json.loads(manifest) if manifest else None,
+                "helper_sha": helper, "helper_linked": os.path.exists("/usr/local/bin/talos")}
+
+# ---- mediamtx ----------------------------------------------------------------------------
+# API on 127.0.0.1:9997 (enabled in Gaia's stack/mediamtx.yml; the old host service has it off).
+paths, perr = http_json("http://127.0.0.1:9997/v3/paths/list")
+mtx = {"api": paths is not None, "error": perr}
+if paths is not None:
+    mtx["paths"] = [{"name": p.get("name"), "ready": p.get("ready"), "tracks": p.get("tracks"),
+                     "bytes_received": p.get("bytesReceived"), "readers": len(p.get("readers") or []),
+                     "source": (p.get("source") or {}).get("type")} for p in paths.get("items") or []]
+out["mediamtx"] = mtx
 
 # ---- operator ----------------------------------------------------------------------------
 _, so, _ = run(["ss", "-ltnH"], 3)

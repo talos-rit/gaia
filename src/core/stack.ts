@@ -1,20 +1,18 @@
 import type { ComponentId, Config, PiCfg } from "./config.ts";
 
 /**
- * Docker CLI prefix for a Pi. The lab Pis run an isolated daemon on /run/talos-docker.sock
- * (talos-docker.service, see operator/deploy/dual-arm/install-runtime.sh) so it can't disturb
- * the host's network/firewall setup; a stock install just uses `docker`.
+ * Docker CLI prefix for a Pi. "system" is a normal Docker install with the SSH user in the
+ * `docker` group (Troubleshoot > Install Docker). "isolated" is the emergency setup's separate
+ * daemon on /run/talos-docker.sock (talos-docker.service), kept until each Pi is migrated.
  */
 export function docker(pi: PiCfg): string {
-  return pi.runtime === "isolated"
-    ? `sudo -n ${pi.runtimeDir}/docker -H unix:///run/talos-docker.sock`
-    : "sudo -n docker";
+  return pi.runtime === "isolated" ? `sudo -n ${pi.runtimeDir}/docker -H unix:///run/talos-docker.sock` : "docker";
 }
 
 export function compose(pi: PiCfg): string {
   return pi.runtime === "isolated"
     ? `sudo -n env DOCKER_HOST=unix:///run/talos-docker.sock ${pi.runtimeDir}/docker-compose`
-    : "sudo -n docker compose";
+    : "docker compose";
 }
 
 /** `cd` into the stack dir; compose picks up compose.yaml from there. */
@@ -82,14 +80,16 @@ export type Images = Record<ComponentId, string>;
 
 /**
  * The compose file Gaia writes to ~/<stack.dir>/compose.yaml on each Pi.
- * Mirrors the hand-written two-pi-20261104 stack (resource caps, SIGINT shutdown, no
- * auto-restart because Operator startup HOMEs the arm) but with one image per component.
+ *
+ * Restart policy: MediaMTX, the camera and Pi-Vision come back by themselves (after a crash, and
+ * at boot when Docker starts at boot) unless someone stopped them. Operator never restarts on
+ * its own, because starting it HOMEs the arm.
  */
 export function composeFile(cfg: Config, pi: PiCfg, images: Images): Record<string, unknown> {
   const base = (svc: ComponentId) => ({
     image: images[svc],
     network_mode: "host",
-    restart: "no", // deliberate: an automatic Operator restart would HOME the arm unattended
+    restart: "unless-stopped",
     stop_signal: "SIGINT",
     stop_grace_period: "8s",
     security_opt: ["no-new-privileges:true"],
@@ -102,6 +102,7 @@ export function composeFile(cfg: Config, pi: PiCfg, images: Images): Record<stri
     services: {
       operator: {
         ...base("operator"),
+        restart: "no", // deliberate: an automatic Operator restart would HOME the arm unattended
         environment: { ERV_CONTROLLER_PROFILE: pi.arm.controller },
         command: ["/opt/talos/erv", "/opt/talos/operator.conf"],
         devices: [`${serialDevice(pi)}:/dev/arm`],
@@ -110,8 +111,17 @@ export function composeFile(cfg: Config, pi: PiCfg, images: Images): Record<stri
         mem_limit: "32m",
         pids_limit: 128,
       },
+      mediamtx: {
+        // RTSP server the camera publishes to and Commander / Pi-Vision read from (rtsp://<pi>:8554/<path>).
+        // Same host network as the camera, so publishing is loopback either way: one container or two makes no latency difference.
+        ...base("mediamtx"),
+        cpus: 0.5,
+        mem_limit: "128m",
+        pids_limit: 128,
+      },
       camera: {
         ...base("camera"),
+        depends_on: ["mediamtx"],
         environment: cameraEnv(pi),
         devices: [`${cameraDevice(pi)}:/dev/camera`, ...(pi.arm.encoder === "hardware" ? ["/dev/video11:/dev/video11"] : [])],
         cpus: 0.75,

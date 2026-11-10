@@ -1,0 +1,18 @@
+# MediaMTX config baked into Gaia's mediamtx image. Anything not listed keeps MediaMTX's default
+# (https://github.com/bluenviron/mediamtx/blob/main/mediamtx.yml). Same protocols as the old host
+# service: RTSP :8554, RTMP :1935, HLS :8888, WebRTC :8889, SRT :8890. Anyone may publish and read.
+logLevel: info
+
+# Control API, localhost only, so Gaia's status probe can see which streams are live and who reads them.
+api: yes
+apiAddress: 127.0.0.1:9997
+
+rtspAddress: :8554
+rtmpAddress: :1935
+hlsAddress: :8888
+webrtcAddress: :8889
+srtAddress: :8890
+
+paths:
+  # Any path name works; each Pi's camera publishes to its own (gaia.config.yaml › arm.rtspPath).
+  all_others:

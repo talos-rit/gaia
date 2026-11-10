@@ -32,11 +32,16 @@ components:
       POSE_THREADS: "2" # onnxruntime intra-op threads; 2 gives ~3.5 fps on a Pi 4 with the 320 model
       POSE_SPINNING: "0"
 
+  mediamtx:
+    # RTSP server, built from stack/mediamtx.Dockerfile (official image + stack/mediamtx.yml).
+    source: { mode: builtin }
+    version: 1.15.3 # bluenviron/mediamtx tag; same version the Pis ran as a host service
+
   camera:
     # Runs scripts/stream_camera.sh; settings come from env vars generated per Pi.
-    # OUTPUT_FPS (capture 30 fps MJPEG, publish 10 fps) needs cam_streamer's feat/output-fps change;
-    # on an older script it's ignored and the stream is published at 30 fps.
-    source: { mode: git, repo: https://github.com/talos-rit/cam_streamer.git, ref: main }
+    # OUTPUT_FPS (capture 30 fps MJPEG, publish 10 fps) needs cam_streamer's feat/output-fps branch;
+    # switch ref to main once it's merged. (An older script ignores OUTPUT_FPS and publishes 30 fps.)
+    source: { mode: git, repo: https://github.com/talos-rit/cam_streamer.git, ref: feat/output-fps }
 
 pis:
   - id: bingo
@@ -44,7 +49,7 @@ pis:
     host: bingo.local
     fallbackHosts: [192.168.0.3, 192.168.0.2]
     user: pi
-    runtime: isolated # isolated = /run/talos-docker.sock daemon (talos-docker.service); system = stock `docker`
+    runtime: system # system (default) = normal Docker install; isolated = the emergency /run/talos-docker.sock daemon
     arm:
       controller: native # ERV_CONTROLLER_PROFILE
       homesOnStart: true # starting Operator physically HOMEs the arm -> UI asks for confirmation
@@ -63,10 +68,11 @@ pis:
     # bluey.local breaks when the Pi is on ethernet and Wi-Fi at once (avahi renames it bluey-2.local).
     fallbackHosts: [192.168.0.52, bluey-2.local, 192.168.0.54]
     user: pi
-    runtime: isolated
+    runtime: system
     arm:
       controller: esp-one-axis
       homesOnStart: false
+      telemetry: false # the custom controller sends no joint telemetry yet; flip to true once it does (see TODO.md)
       operatorPort: 61616
       visionPort: 5051
       rtspPath: camera

@@ -3,16 +3,19 @@
 Things we've agreed to change, and the open decisions. Keep this current: if it isn't
 written here, assume nobody remembers it.
 
-## Current baseline (2026-11-06)
+## Current baseline (2026-11-09)
 
-What Gaia deploys right now, chosen to reproduce the Nov 5 demo exactly:
+Both Pis run a normal Docker install (Docker 29.9.3 from Docker's .debs) and four containers:
 
 | Component | Source | Why |
 |---|---|---|
 | Operator | `operator` @ `feat/dual-arm-containers` | what the demo ran |
-| Pi-Vision | `pi-vision` @ `feat/dual-arm-integration` (local worktree via `gaia.local.yaml` until pushed), 320 model, `POSE_THREADS=2` | canonical repo; 320 for small targets (~3.5 fps accepted 2026-11-09) |
-| Cam Streamer | `cam_streamer` working copy, branch `feat/output-fps` (via `gaia.local.yaml`) | reproduces the demo's ffmpeg command (MJPEG 30 fps in → 10 fps out) |
-| MediaMTX | host systemd service (`mediamtx.service`) | unchanged from before containers |
+| Pi-Vision | `pi-vision` @ `feat/dual-arm-integration`, 320 model, `POSE_THREADS=2` | canonical repo; 320 for small targets (~3.5 fps accepted 2026-11-09) |
+| Cam Streamer | `cam_streamer` @ `feat/output-fps` | reproduces the demo's ffmpeg command (MJPEG 30 fps in → 10 fps out) |
+| MediaMTX | `bluenviron/mediamtx:1.15.3` + `stack/mediamtx.yml` (container) | moved into the stack 2026-11-09; host `mediamtx.service` disabled |
+
+Bluey: Operator isn't running, because its ESP's USB-serial adapter (CP2102) wasn't plugged in on
+2026-11-09 (`lsusb` showed only the webcam). Plug it in, then Start.
 
 ## Pi-Vision: one canonical copy (the `pi-vision` repo)
 
@@ -39,13 +42,13 @@ What `commander/tools/pi_tracker` has that pi-vision `master` lacks (Commander d
 pi-vision-only bug: **`web_server.py` skeleton overlay passes float keypoints to `cv2.line`**,
 which crashes the MJPEG dashboard stream whenever a person is detected.
 
-- [ ] Review the port on branch `feat/dual-arm-integration` (worktree `../pi-vision-dual-arm`,
-      uncommitted). It brings 1-3 over from Commander's copy and fixes the `cv2.line` bug.
+- [ ] PR → merge branch `feat/dual-arm-integration` (committed + pushed as 180387d; worktree
+      `../pi-vision-dual-arm`). It brings 1-3 over from Commander's copy and fixes the `cv2.line` bug.
       Everything else that differs from Commander's copy is pi-vision being *newer* (head-aim /
       eye-line framing) or reformatting (`identity.py`). Commit → PR → merge.
       - 2026-11-09: tests pass in the image; the fake-Operator test passes (PROFILE + ACK).
         **Running on Bingo** via a `gaia.local.yaml` override: `controller_profile: native`.
-        Not yet verified by a person: Commander jog, skeleton overlay, elbow tracking.
+        Verified by hand: Commander jogging and tracking work with it.
       - [ ] **Speed:** the 320 model with `POSE_THREADS=1` reaches only 2.7 fps (0.39 s per inference,
             python at ~120% CPU). The demo ran the 192 model at 3.5 fps. Options: add
             `yolo11n-pose-192.onnx` to pi-vision, or use `POSE_THREADS=2`.
@@ -53,7 +56,7 @@ which crashes the MJPEG dashboard stream whenever a person is detected.
             python ~205% CPU, camera still 10.5 fps, 65 °C, no throttling. A small gain for about half a
             core more. Next to try: the 192 model.
 - [x] Switch `gaia.config.yaml` vision to `pi-vision` (2026-11-09; ref `feat/dual-arm-integration`).
-- [ ] After the merge: set the ref to `master` and drop the vision override from `gaia.local.yaml`.
+- [ ] After the merge: set the vision ref in `gaia.config.yaml` to `master`.
 - [ ] Delete `commander/tools/pi_tracker` (or replace it with a pointer to pi-vision) so this
       can't happen again.
 - [x] Decided: 320 model, `POSE_THREADS=2`, `INFERENCE_FPS=4` cap (~3.5 fps actual).
@@ -62,25 +65,37 @@ which crashes the MJPEG dashboard stream whenever a person is detected.
 
 ## Cam Streamer
 
-- [ ] Review → commit → PR `cam_streamer` branch `feat/output-fps` (uncommitted): adds
+- [ ] PR → merge `cam_streamer` branch `feat/output-fps` (committed + pushed as ad5fd1b): adds
       `OUTPUT_FPS` + `KEYFRAME_INTERVAL` to `scripts/stream_camera.sh`, plus a README table.
-- [ ] After merge: remove the `camera` override from `gaia.local.yaml` (shared config already
-      points at `cam_streamer@main`).
+- [ ] After merge: set the camera ref in `gaia.config.yaml` to `main`.
 
-## MediaMTX into the stack (agreed: yes)
+## A fresh Pi only needs Docker (done 2026-11-09)
 
-Goal: a fresh Pi only needs Docker.
-
-- [ ] Add a `mediamtx` service (`bluenviron/mediamtx`, pin to the host's 1.15.3) with a
-      Gaia-generated `mediamtx.yml` (publisher paths, API on 127.0.0.1:9997 for health checks).
-- [ ] Migration on each Pi: stop + disable host `mediamtx.service` (Troubleshoot action), make
-      preflight catch a still-running host MediaMTX on :8554.
-- [ ] Use MediaMTX's API for stream health instead of ffprobe.
+- [x] `mediamtx` service (`bluenviron/mediamtx:1.15.3` + `stack/mediamtx.yml`, API on
+      127.0.0.1:9997). Deploy retires the host `mediamtx.service`; preflight refuses to start while it
+      runs. Same host network as the camera, so a combined container wouldn't cut latency.
+- [x] MediaMTX's API feeds health (path live, readers). ffprobe still measures the camera's fps.
+- [x] **Troubleshoot › Install Docker**: Docker's official .debs, downloaded on the laptop,
+      SHA-256 checked, installed offline with apt. `daemon.json` keeps Docker off the firewall
+      (`iptables: false`, `bridge: none`) and on the classic image store. `pi` is in the `docker`
+      group, so no `sudo`. Both Pis migrated; `runtime: system` is now the default.
+- [x] Boot behaviour (agreed): MediaMTX, camera, Pi-Vision `restart: unless-stopped`; Operator
+      `restart: "no"`. Verified on Bingo with a reboot: three came back, Operator stayed stopped.
+- [x] `talos` helper on each Pi (`/usr/local/bin/talos`); every button is one `talos …` call.
+- [ ] **Delete the old isolated runtime** on both Pis once you're happy (Troubleshoot › Delete the
+      old isolated runtime): frees ~2.7 GB on Bingo, ~0.8 GB on Bluey. It's stopped and disabled,
+      not deleted, so `sudo systemctl enable --now talos-docker` still brings it back.
+- [ ] The old `~/talos-containers`, `/etc/udev/rules.d/70-talos-arms.rules` (still what creates
+      `/dev/talos-*` today!) and host `/usr/local/bin/mediamtx` are untouched. Switch to Gaia's
+      `70-talos-gaia.rules` (Re-apply USB rules) before removing `70-talos-arms.rules`.
 
 ## Bluey: no telemetry on the custom controller
 
-- [ ] Per-arm `telemetry: false` in `gaia.config.yaml`. Operator health then uses container +
-      listening socket + Pi-Vision connection + log activity, and never warns "no telemetry".
+- [x] Per-arm `telemetry: false` in `gaia.config.yaml` (2026-11-09; set for Bluey). Operator health
+      then uses container + listening socket + Pi-Vision connection, and never warns "no telemetry".
+- [ ] **When Bluey's controller gets telemetry:** remove `telemetry: false` from Bluey in
+      `gaia.config.yaml`, so Gaia checks for fresh telemetry again and catches a hung controller.
+      (If no arm needs it any more, also delete the `!pi.arm.telemetry` branch in `src/core/status.ts`.)
 
 ## Where images get built (open decision)
 
@@ -105,12 +120,24 @@ Alternative: ship source to the Pi and `docker build` there, so laptops need onl
   appears on *every* power-on, suspect the controller's backup battery. Its fan bearing is also
   failing (loud).
 
-- Bluey's `bluey.local` stops resolving because avahi hits a **host-name conflict at boot** and
-  renames itself to `bluey-2.local` (seen 2026-11-09; its Ethernet and Wi-Fi were both on the LAN
-  during boot). Troubleshoot › Restart avahi fixed it. If it keeps happening, consider having Gaia
-  detect a `-2` name.
+- **`.local` names breaking (`bingo-2.local`, `bluey-2.local`): root cause found 2026-11-09.** Bingo
+  and Bluey were flashed from one SD card image (Nov 19, 2024): same `/etc/machine-id`, same
+  NetworkManager `secret_key`, same SSH host keys. So they generated the *same IPv6 link-local
+  address*; avahi saw the duplicate and renamed whichever Pi booted second. Fixed by giving Bingo a
+  new machine-id + NM secret (Troubleshoot › Give this Pi its own identity; old files kept as
+  `*.before-gaia`). After a reboot, Bingo kept `bingo.local`. Gaia now warns when two Pis share a machine-id.
+- [ ] Both Pis still share **SSH host keys**, so neither key proves which Pi you reached.
+      Regenerating them on one Pi (`sudo rm /etc/ssh/ssh_host_* && sudo dpkg-reconfigure
+      openssh-server`) means everyone must delete its old line from `~/.ssh/known_hosts` once.
+      Gaia works around it by also checking the hostname on learned addresses.
+- The Pis have no internet (no NTP) and no RTC; Bingo was 4 days behind. Deploy now sets the clock
+  from the laptop, and Troubleshoot › Set clock does it on demand.
 
-## Command previews are too noisy (UI)
+## Command previews are too noisy (UI) — mostly done 2026-11-09
+
+Done: stock Docker (1), the `talos` helper (2), no `cd` (3), no quotes on simple commands (4).
+Buttons now show e.g. `ssh pi@bingo.local talos stop camera`. Still long: Deploy's preview and
+the few inline commands (Install Docker, clock, identity). Remaining ideas: 5 and 6.
 
 The hover previews only earn their place if they *teach* something; right now they're walls of
 `sudo -n /opt/talos-docker/29.8.2/docker -H unix:///run/talos-docker.sock …` with `'\''` quoting
@@ -177,22 +204,21 @@ Gaia), keeping the guide as the "how it works" explainer:
 
 ## Changes Gaia work made outside this repo (as of 2026-11-09)
 
-Nothing is committed or pushed anywhere.
-
-- `../cam_streamer`: new branch `feat/output-fps` (from `main`), uncommitted edits to
-  `scripts/stream_camera.sh` and `README.md`. (`yolo11n-pose.pt` was already untracked before.)
-- `../pi-vision`: **checkout untouched** (still `feat/elbow-tracking`; its modified
-  `__pycache__` files predate Gaia). Added a *git worktree* `../pi-vision-dual-arm` on new branch
-  `feat/dual-arm-integration` (from `origin/master`) with uncommitted edits to `config.py`,
-  `control_api.py`, `main.py`, `operator_client.py`, `web_server.py` + new `inference_rate.py`.
-  Remove with `git -C ../pi-vision worktree remove ../pi-vision-dual-arm`.
-- `../operator`, `../commander`, `../pi-vision`, `../cam_streamer`: `git fetch` only (remote-tracking
-  refs). Operator's modified files on `twinning` and Commander's stash predate Gaia.
-- **Bingo:** `~/talos-stack/` (compose.yaml, operator.conf, gaia-manifest.json, logs/, previous-*),
-  `talos/*` images in the isolated Docker runtime, `talos-docker.service` started. The old
-  `~/talos-containers/` folder and `talos-arms-*` containers are untouched. `70-talos-gaia.rules`
-  has *not* been installed (only by Troubleshoot › Re-apply USB rules).
-- **Bluey:** nothing (unreachable the whole time).
+- `../cam_streamer`: branch `feat/output-fps` (committed + pushed by you as ad5fd1b).
+- `../pi-vision`: your checkout is untouched (still `feat/elbow-tracking`; its modified
+  `__pycache__` files predate Gaia). Git worktree `../pi-vision-dual-arm` on branch
+  `feat/dual-arm-integration` (committed + pushed by you as 180387d). Remove the worktree with
+  `git -C ../pi-vision worktree remove ../pi-vision-dual-arm`.
+- `../operator`, `../commander`: `git fetch` only.
+- **Both Pis:**
+  - Docker 29.9.3 installed from Docker's .debs (`/etc/docker/daemon.json`); `pi` added to the
+    `docker` group; `docker.service` enabled at boot.
+  - `talos-docker.service` and host `mediamtx.service` stopped and disabled, not deleted.
+  - `~/talos-stack/` (compose.yaml, operator.conf, gaia-manifest.json, bin/talos, logs/, previous-*),
+    plus the symlink `/usr/local/bin/talos`. Clock set from the laptop.
+  - Untouched: `~/talos-containers/`, `70-talos-arms.rules`, `/var/lib/talos-docker` (old images).
+- **Bingo only:** new `/etc/machine-id` and `/var/lib/NetworkManager/secret_key` (originals kept as
+  `/etc/machine-id.before-gaia` and `secret_key.before-gaia`). Rebooted twice.
 
 ## Smaller Gaia items
 

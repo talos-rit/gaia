@@ -5,11 +5,12 @@ export const ROOT = resolve(import.meta.dir, "../..");
 export const CONFIG_FILE = resolve(ROOT, "gaia.config.yaml");
 export const LOCAL_CONFIG_FILE = resolve(ROOT, "gaia.local.yaml");
 
-export type ComponentId = "operator" | "camera" | "vision";
-export const COMPONENTS: ComponentId[] = ["operator", "camera", "vision"];
+export type ComponentId = "operator" | "camera" | "mediamtx" | "vision";
+export const COMPONENTS: ComponentId[] = ["operator", "camera", "mediamtx", "vision"];
 export const COMPONENT_LABEL: Record<ComponentId, string> = {
   operator: "Operator",
   camera: "Cam Streamer",
+  mediamtx: "MediaMTX",
   vision: "Pi-Vision",
 };
 
@@ -32,6 +33,10 @@ export interface VisionCfg extends ComponentCfg {
   env?: Record<string, string>;
 }
 export type CameraCfg = ComponentCfg;
+export interface MediamtxCfg extends ComponentCfg {
+  /** bluenviron/mediamtx image tag. */
+  version: string;
+}
 
 export interface UsbMatch {
   idPath: string;
@@ -47,6 +52,8 @@ export interface ArmCfg {
   rtspPath: string;
   inferenceFps: number;
   encoder: "hardware" | "software";
+  /** false = the controller sends no joint telemetry (Bluey's custom controller, for now). */
+  telemetry: boolean;
   usb?: { serial?: UsbMatch; camera?: UsbMatch };
 }
 
@@ -64,7 +71,7 @@ export interface PiCfg {
 export interface Config {
   server: { port: number };
   stack: { dir: string; project: string };
-  components: { operator: OperatorCfg; vision: VisionCfg; camera: CameraCfg };
+  components: { operator: OperatorCfg; vision: VisionCfg; camera: CameraCfg; mediamtx: MediamtxCfg };
   pis: PiCfg[];
   /** Validation problems; shown as a banner in the UI instead of crashing. */
   problems: string[];
@@ -118,6 +125,8 @@ export function loadConfig(): Config {
     problems.push(`Could not parse config: ${(e as Error).message}`);
   }
   const comps = (raw.components ?? {}) as Obj;
+  // MediaMTX is built entirely by Gaia (stack/mediamtx.Dockerfile); no config needed.
+  comps.mediamtx = { source: { mode: "builtin" }, version: "1.15.3", ...((comps.mediamtx as Obj) ?? {}) };
   for (const c of COMPONENTS) validateSource(c, (comps[c] as Obj | undefined)?.source, problems);
 
   const pis: PiCfg[] = [];
@@ -136,7 +145,8 @@ export function loadConfig(): Config {
       host: String(p.host ?? ""),
       fallbackHosts: ((p.fallbackHosts as string[]) ?? []).map(String),
       user: String(p.user ?? "pi"),
-      runtime: p.runtime === "system" ? "system" : "isolated",
+      // system = a normal Docker install (what Troubleshoot > Install Docker sets up).
+      runtime: p.runtime === "isolated" ? "isolated" : "system",
       runtimeDir: String(p.runtimeDir ?? "/opt/talos-docker/29.8.2"),
       arm: {
         controller: String(arm.controller ?? "native"),
@@ -146,6 +156,7 @@ export function loadConfig(): Config {
         rtspPath: String(arm.rtspPath ?? id),
         inferenceFps: Number(arm.inferenceFps ?? 2),
         encoder: arm.encoder === "software" ? "software" : "hardware",
+        telemetry: arm.telemetry !== false,
         usb: arm.usb as ArmCfg["usb"],
       },
     });
@@ -159,6 +170,7 @@ export function loadConfig(): Config {
       operator: { runTests: true, ...(comps.operator as Obj) } as unknown as OperatorCfg,
       camera: { ...(comps.camera as Obj) } as unknown as CameraCfg,
       vision: { appDir: ".", model: "model.onnx", extraArgs: [], env: {}, ...vision } as unknown as VisionCfg,
+      mediamtx: { ...(comps.mediamtx as Obj) } as unknown as MediamtxCfg,
     },
     pis,
     problems,
@@ -190,6 +202,16 @@ export function clearLocalSource(component: ComponentId) {
 export function localOverrideFor(component: ComponentId): boolean {
   const comps = readYaml(LOCAL_CONFIG_FILE).components as Obj | undefined;
   return isObj(comps?.[component]) && "source" in (comps![component] as Obj);
+}
+
+/** A component's source from gaia.config.yaml alone (ignoring gaia.local.yaml overrides). */
+export function sharedSource(component: ComponentId): Source | undefined {
+  try {
+    const s = ((readYaml(CONFIG_FILE).components as Obj | undefined)?.[component] as Obj | undefined)?.source;
+    return isObj(s) ? (s as unknown as Source) : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export function getPi(cfg: Config, id: string): PiCfg | undefined {

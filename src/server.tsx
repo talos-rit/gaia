@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { resolve } from "node:path";
 import { getAction } from "./core/actions.ts";
+import { helperHash, installHelperStep, talos } from "./core/helper.ts";
 import { proc } from "./core/pipeline.ts";
 import {
   COMPONENT_LABEL,
@@ -17,8 +18,8 @@ import {
 } from "./core/config.ts";
 import { deploy, resolveSource, stackFiles } from "./core/deploy.ts";
 import { displayStep, getJob, listJobs, onJobFinished, startJob, type Job } from "./core/jobs.ts";
-import { knownAddress, readLines, runArgv, sq, sshDisplay, SSH_OPTS, target } from "./core/ssh.ts";
-import { cameraDevice, containerName, docker, rtspUrl, type Images } from "./core/stack.ts";
+import { knownAddress, readLines, runArgv, sq, sshDisplay, sshOpts, target } from "./core/ssh.ts";
+import { rtspUrl, type Images } from "./core/stack.ts";
 import { getState, probeCommand, PROBE_PATH, refreshSoon, startPolling } from "./core/status.ts";
 import { ErrorNote, FleetPanel, JobView, Layout, Modal, PiCard, PiStatus, SourcesPanel } from "./ui/components.tsx";
 
@@ -55,7 +56,7 @@ app.get("/", (c) => {
         <span class="spacer" />
         <span id="local-docker" hx-get="/local/status" hx-trigger="load, every 15s" hx-swap="innerHTML" />
         <button class="btn ghost" data-toggle-drawer>
-          Activity
+          Activity <span id="activity-badge" />
         </button>
       </header>
       {cfg.problems.length > 0 && (
@@ -82,7 +83,9 @@ app.get("/", (c) => {
       <aside id="drawer" class="drawer">
         <header>
           <h3>Activity</h3>
-          <span class="muted">Every command Gaia runs appears here with its output.</span>
+          <span id="activity-status" class="muted" data-toggle-drawer title="Show Activity">
+            Every command Gaia runs appears here with its output.
+          </span>
           <span class="spacer" />
           <button class="btn ghost small" data-toggle-drawer>
             Hide
@@ -144,11 +147,33 @@ app.post("/local/colima-start", (c) => {
 
 // ---- actions ----------------------------------------------------------------------------
 
+// ---- talos helper on the Pi ---------------------------------------------------------------
+
+const helperInstalled = new Map<string, string>(); // pi id -> hash we installed this session
+
+function helperCurrent(cfg: Config, pi: PiCfg): boolean {
+  const want = helperHash(cfg, pi);
+  const st = getState(pi.id).data?.stack;
+  return helperInstalled.get(pi.id) === want || (st?.helper_sha === want && !!st.helper_linked);
+}
+
+/** For views that run `talos …` outside a job (logs, snapshot): install the helper first if needed, as a visible job. */
+async function ensureHelper(cfg: Config, pi: PiCfg) {
+  if (helperCurrent(cfg, pi)) return;
+  const job = startJob(`${pi.name}: install the talos helper`, async (j) => void (await j.run(installHelperStep(cfg, pi))), { pi });
+  await new Promise<void>((r) => (job.status !== "running" ? r() : job.subscribe((e) => e.type === "done" && r())));
+  if (job.status === "ok") helperInstalled.set(pi.id, helperHash(cfg, pi));
+}
+
 function launch(cfg: Config, pi: PiCfg, actionId: string, service?: ComponentId): Job {
   const action = getAction(actionId);
   if (!action) throw new Error(`unknown action ${actionId}`);
   const title = `${pi.name}: ${action.label}${service ? ` ${COMPONENT_LABEL[service]}` : ""}`;
-  const steps = action.steps(cfg, pi, service);
+  const exclusive = action.scope === "troubleshoot" && !action.confirm ? [] : [pi];
+  if (action.run) return startJob(title, (j) => action.run!(j, cfg, pi), { pi, exclusive });
+  // Actions are `talos <command>` calls; add a step that installs/updates the helper when the Pi lacks the current one.
+  const usesHelper = action.steps(cfg, pi, service).some((s) => s.where === "remote" && s.cmd.startsWith("talos "));
+  const steps = [...(usesHelper && !helperCurrent(cfg, pi) ? [installHelperStep(cfg, pi)] : []), ...action.steps(cfg, pi, service)];
   const job = startJob(
     title,
     async (j) => {
@@ -160,9 +185,10 @@ function launch(cfg: Config, pi: PiCfg, actionId: string, service?: ComponentId)
           for (const k of idx.slice(i + 1)) j.setStep(k, "skipped");
           throw e;
         }
+        if (steps[i] && steps[i]!.label === installHelperStep(cfg, pi).label) helperInstalled.set(pi.id, helperHash(cfg, pi));
       }
     },
-    { pi, exclusive: action.scope === "troubleshoot" && !action.confirm ? [] : [pi] },
+    { pi, exclusive },
   );
   return job;
 }
@@ -260,11 +286,9 @@ app.get("/jobs/:id/events", (c) => {
 
 // ---- logs -------------------------------------------------------------------------------
 
-function logsCommand(cfg: Config, pi: PiCfg, svc: ComponentId, file: boolean, tail: number) {
+function logsCommand(svc: ComponentId, file: boolean, tail: number) {
   // `timeout` makes sure the remote follower dies even if the SSH channel lingers.
-  return file
-    ? `timeout 3600 tail -n ${tail} -F ~/${cfg.stack.dir}/logs/operator.log`
-    : `timeout 3600 ${docker(pi)} logs -f --tail ${tail} ${containerName(cfg, svc)}`;
+  return file ? `timeout 3600 ${talos(`oplog -n ${tail} -F`)}` : `timeout 3600 ${talos(`logs ${svc} -f --tail ${tail}`)}`;
 }
 
 app.get("/pis/:id/logs/:svc", (c) => {
@@ -273,7 +297,7 @@ app.get("/pis/:id/logs/:svc", (c) => {
   const svc = c.req.param("svc") as ComponentId;
   if (!pi || !COMPONENTS.includes(svc)) return c.text("not found", 404);
   const file = c.req.query("file") === "1";
-  const cmd = logsCommand(cfg, pi, svc, file, 300);
+  const cmd = logsCommand(svc, file, 300);
   return c.html(
     <Modal title={`${pi.name} · ${COMPONENT_LABEL[svc]} · ${file ? "operator.log" : "container logs"}`}>
       <pre class="cmd">$ {sshDisplay(`${pi.user}@${knownAddress(pi)}`, cmd)}</pre>
@@ -299,16 +323,17 @@ app.get("/pis/:id/logs/:svc/stream", async (c) => {
   const pi = getPi(cfg, c.req.param("id"));
   const svc = c.req.param("svc") as ComponentId;
   if (!pi || !COMPONENTS.includes(svc)) return c.text("not found", 404);
-  const cmd = logsCommand(cfg, pi, svc, c.req.query("file") === "1", 300);
+  const cmd = logsCommand(svc, c.req.query("file") === "1", 300);
   return streamSSE(c, async (stream) => {
     let tgt: string;
     try {
+      await ensureHelper(cfg, pi);
       tgt = await target(pi);
     } catch (e) {
       await stream.writeSSE({ event: "end", data: (e as Error).message });
       return;
     }
-    const proc = Bun.spawn(["ssh", ...SSH_OPTS, tgt, cmd], { stdout: "pipe", stderr: "pipe", stdin: "ignore" });
+    const proc = Bun.spawn(["ssh", ...sshOpts(pi), tgt, cmd], { stdout: "pipe", stderr: "pipe", stdin: "ignore" });
     stream.onAbort(() => proc.kill());
     await stream.writeSSE({ event: "open", data: "" });
     const send = (l: string) => stream.writeSSE({ event: "line", data: l }).catch(() => proc.kill());
@@ -320,10 +345,7 @@ app.get("/pis/:id/logs/:svc/stream", async (c) => {
 
 // ---- snapshot ---------------------------------------------------------------------------
 
-function snapshotCommand(cfg: Config, pi: PiCfg) {
-  const grab = `-v error -rtsp_transport tcp -i ${rtspUrl(pi)} -frames:v 1 -q:v 4 -f image2 -c:v mjpeg -`;
-  return `if command -v ffmpeg >/dev/null; then timeout 10 ffmpeg ${grab}; else timeout 10 ${docker(pi)} exec ${containerName(cfg, "camera")} ffmpeg ${grab}; fi`;
-}
+const snapshotCommand = () => talos("snapshot");
 
 app.get("/pis/:id/snapshot", (c) => {
   const cfg = cfgNow();
@@ -331,7 +353,7 @@ app.get("/pis/:id/snapshot", (c) => {
   if (!pi) return c.text("not found", 404);
   return c.html(
     <Modal title={`${pi.name} · camera snapshot`}>
-      <pre class="cmd">$ {sshDisplay(`${pi.user}@${knownAddress(pi)}`, snapshotCommand(cfg, pi))}</pre>
+      <pre class="cmd">$ {sshDisplay(`${pi.user}@${knownAddress(pi)}`, snapshotCommand())}</pre>
       <p class="muted">
         One frame pulled from <span class="mono">{rtspUrl(pi)}</span> on the Pi itself, the same stream Commander and Pi-Vision read. Remote viewers use{" "}
         <span class="mono">{rtspUrl(pi, knownAddress(pi))}</span>.
@@ -350,7 +372,8 @@ app.get("/pis/:id/snapshot.jpg", async (c) => {
   const cfg = cfgNow();
   const pi = getPi(cfg, c.req.param("id"));
   if (!pi) return c.text("not found", 404);
-  const proc = Bun.spawn(["ssh", ...SSH_OPTS, await target(pi), snapshotCommand(cfg, pi)], { stdout: "pipe", stderr: "pipe" });
+  await ensureHelper(cfg, pi);
+  const proc = Bun.spawn(["ssh", ...sshOpts(pi), await target(pi), snapshotCommand()], { stdout: "pipe", stderr: "pipe" });
   const [buf, code] = await Promise.all([new Response(proc.stdout).arrayBuffer(), proc.exited]);
   if (code !== 0 || buf.byteLength === 0) return c.text(await new Response(proc.stderr).text(), 502);
   return new Response(buf, { headers: { "content-type": "image/jpeg", "cache-control": "no-store" } });

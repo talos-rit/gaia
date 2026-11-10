@@ -1,6 +1,6 @@
 # Gaia
 
-A small web app for deploying and running the Talos Pi stack (**Operator**, **Cam Streamer**, **Pi-Vision**) on any number of Raspberry Pis, with every command it runs shown to you.
+A small web app for deploying and running the Talos Pi stack (**Operator**, **Cam Streamer**, **MediaMTX**, **Pi-Vision**) on any number of Raspberry Pis, with every command it runs shown to you.
 
 ```sh
 bun install
@@ -18,7 +18,7 @@ Works on **macOS, Linux and plain Windows** (no WSL or Git Bash needed). Your ma
   ```
 - Docker with buildx to build images: Docker Desktop, or Colima on macOS (the header has a **Start Colima** button). The header warns if any of these are missing.
 
-Each Pi needs Docker (the lab Pis' isolated runtime, or a stock install), MediaMTX on port 8554, `python3`, and passwordless `sudo` for the SSH user.
+Each Pi needs only Raspberry Pi OS (Debian bookworm) with `python3`, SSH key access and passwordless `sudo` for the SSH user. **Troubleshoot › Install Docker** installs Docker from Docker's official packages, downloaded on your machine, since the Pis have no internet. Everything else, MediaMTX included, runs in containers.
 
 ## What it does
 
@@ -28,7 +28,7 @@ Each Pi needs Docker (the lab Pis' isolated runtime, or a stock install), MediaM
   - **Pi-Vision**: `/api/status` and `/api/v1/observations`. Healthy means the pose model loaded, fps is above 0, and the observation sequence number advances between polls, even when no person is detected.
   - **Host**: Docker runtime, legacy systemd units that would steal the camera, throttling, temperature, disk, CMA, and containers that Gaia didn't deploy.
 - **Start / Stop / Restart** the whole stack or a single service, plus **Logs** (live tail, like Portainer) and **Log file** (`operator.log`).
-- **Deploy** builds three arm64 images on your machine, copies them to the Pi over SSH, writes `~/talos-stack/compose.yaml`, and starts the stack. The Pis need no internet access.
+- **Deploy** builds four arm64 images on your machine, copies them to the Pi over SSH, writes `~/talos-stack/compose.yaml`, and starts the stack. The Pis need no internet access.
 - **Troubleshoot** menu: re-apply USB rules (what `install-usb-rules.sh` did), detect USB devices, see who owns the serial port or camera, reset a stuck ESP via RTS, restart MediaMTX, stop legacy host services or old containers, check host health, read kernel warnings, fix a lost `.local` name (avahi), prune images, reboot.
 
 ### Seeing what runs
@@ -51,19 +51,29 @@ Changes made in the UI go to **`gaia.local.yaml`**, which is git-ignored and dee
 
 Builds are cached by their inputs: commit or content hash, Dockerfile, and build args. Deploying the same thing twice rebuilds nothing. Transfers skip any image the Pi already has. For a new image they send **only the layers the Pi is missing**, so a one-line Pi-Vision change ships a few KB instead of ~580 MB. Each Pi records what was deployed in `~/talos-stack/gaia-manifest.json` (source, revision, dirty flag, who deployed it and when), and the card shows it. A card warns when a running container doesn't match the deployed image.
 
-> **Sources by default:** Operator from `operator@feat/dual-arm-containers`, Pi-Vision from `pi-vision@master`, and Cam Streamer from `cam_streamer@main`, which runs its `scripts/stream_camera.sh` with env vars generated per Pi.
+> **Sources by default:** Operator from `operator@feat/dual-arm-containers`, Pi-Vision from `pi-vision@feat/dual-arm-integration` (until it's merged to `master`), Cam Streamer from `cam_streamer@main`, which runs its `scripts/stream_camera.sh` with env vars generated per Pi, and MediaMTX from the official `bluenviron/mediamtx` image plus `stack/mediamtx.yml`.
 >
-> The old two-Pi containers ran Pi-Vision from `commander/tools/pi_tracker`. That copy added `--inference-fps` and `--processing-width` so two workers could share one Pi; `pi-vision` doesn't have them and runs inference uncapped, within the container's 2.5-CPU limit.
->
-> Publishing at 10 fps from a 30 fps MJPEG capture needs `OUTPUT_FPS`, added on cam_streamer's `feat/output-fps` branch. Until that's merged, point Cam Streamer at your working copy (`{ mode: local, path: ../cam_streamer }`). An older script ignores `OUTPUT_FPS` and publishes at 30 fps.
+> Publishing at 10 fps from a 30 fps MJPEG capture needs `OUTPUT_FPS`, added on cam_streamer's `feat/output-fps` branch. An older script ignores it and publishes at 30 fps.
 
 ## Adding a Pi
 
-Add an entry under `pis:` in `gaia.config.yaml`. Use **Troubleshoot › Detect USB devices** on the new Pi to find the `ID_PATH` / vendor / product values for `usb:`, then run **Re-apply USB rules** to create `/dev/talos-<id>-serial` and `/dev/talos-<id>-camera`. Set `runtime: system` if the Pi uses a normal Docker install rather than the lab's isolated `/run/talos-docker.sock` daemon. List extra addresses in `fallbackHosts`. Gaia tries them all and uses the first that answers, which helps when `bluey.local` breaks because avahi renamed it to `bluey-2.local`.
+1. Flash Raspberry Pi OS Lite (64-bit), with SSH and your key enabled, and give it a unique hostname.
+2. Add an entry under `pis:` in `gaia.config.yaml`.
+3. **Troubleshoot › Install Docker.**
+4. If the SD card was copied from another Pi, run **Troubleshoot › Give this Pi its own identity** (Gaia warns when two Pis share a machine-id). Cloned Pis generate the same IPv6 addresses, and avahi then renames one of them to `<name>-2.local`.
+5. **Troubleshoot › Detect USB devices** shows the `ID_PATH` / vendor / product values for `usb:`. Then **Re-apply USB rules** creates `/dev/talos-<id>-serial` and `/dev/talos-<id>-camera`.
+6. **Deploy.**
+
+When `<name>.local` doesn't resolve, Gaia also tries `fallbackHosts` and the IP addresses it last saw the Pi on (`.cache/addresses.json`, only used if the same hostname answers). Every address is checked against the host key recorded for `host`.
+
+## On the Pi: the `talos` command
+
+Deploy installs a small script, `~/talos-stack/bin/talos`, linked as `/usr/local/bin/talos`. Every Gaia button runs one `talos …` command, which is what the hover preview shows. After `ssh pi@bingo.local` you can run the same commands yourself: `talos stop`, `talos logs vision -f`, `talos start camera`, `talos help`. `cat $(which talos)` shows what each one does.
 
 ## Safety
 
-- Starting Operator on a native-controller arm (`homesOnStart: true`) **physically homes it**, so Start, Restart, and Deploy ask for confirmation. Containers use `restart: "no"` on purpose, so nothing restarts the arm unattended.
+- Starting Operator on a native-controller arm (`homesOnStart: true`) **physically homes it**, so Start, Restart, and Deploy ask for confirmation. Operator uses `restart: "no"`, so nothing restarts the arm unattended, not even a reboot.
+- MediaMTX, the camera and Pi-Vision use `restart: unless-stopped`: they restart after a crash and come up at boot, unless you stopped them.
 - One mutating job runs per Pi at a time.
 - Gaia listens on `127.0.0.1` only. It refuses other `Host` headers and requires a custom header on POSTs, so a web page can't trigger actions on your robots. `HOST=0.0.0.0 bun run dev` exposes it to your network *without authentication*; don't.
 
@@ -72,9 +82,10 @@ Add an entry under `pis:` in `gaia.config.yaml`. Use **Troubleshoot › Detect U
 Gaia deploys into `~/talos-stack` as compose project `talos`. It leaves `~/talos-containers` alone, and the old stack keeps working for rollback. The two must not run at the same time, because they share the same USB devices and ports. Deploy's preflight refuses to start while old `talos-arms-*` containers are running, and **Troubleshoot › Stop non-Gaia containers** stops them. `sh stack.sh --profile bingo up -d` in the old folder still brings the old stack back.
 
 What changed compared with the old scripts:
-- There are three images, one per component, instead of one shared `talos-arms` image.
+- There are four images, one per component, instead of one shared `talos-arms` image. MediaMTX moved from a host service into the stack.
+- A normal Docker install replaces the isolated `talos-docker.service` runtime.
 - Images are built on your laptop rather than on the Pi. No venv or binary is copied, and the Pi needs no build tools.
-- `compose.yaml` is generated per Pi, so each Pi runs three services with no profiles.
+- `compose.yaml` is generated per Pi, so each Pi runs four services with no profiles.
 - The vision container has a Docker healthcheck.
 
 The resource caps, SIGINT shutdown, host networking and `/dev/video11` passthrough are unchanged.
@@ -83,7 +94,7 @@ The resource caps, SIGINT shutdown, host networking and `/dev/video11` passthrou
 
 ```
 gaia.config.yaml      fleet + sources (shared)       gaia.local.yaml   personal overrides (ignored)
-stack/                Dockerfiles + pinned Pi-Vision deps (pi-vision's requirements.txt omits onnxruntime)
+stack/                Dockerfiles, pinned Pi-Vision deps, mediamtx.yml
 src/core/             no UI code: config, ssh, actions, jobs, status probe, build/deploy, compose generation
 src/ui/, src/server.tsx   Hono + JSX + htmx; public/ has the small client script and CSS
 .cache/               git mirrors, build contexts, image archives, files last uploaded to each Pi

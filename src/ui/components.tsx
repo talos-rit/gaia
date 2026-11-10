@@ -1,9 +1,9 @@
 import type { Child } from "hono/jsx";
 import { ACTIONS, type Action } from "../core/actions.ts";
-import { COMPONENT_LABEL, COMPONENTS, describeSource, localOverrideFor, type ComponentId, type Config, type PiCfg } from "../core/config.ts";
+import { COMPONENT_LABEL, COMPONENTS, describeSource, localOverrideFor, sharedSource, type ComponentId, type Config, type PiCfg } from "../core/config.ts";
 import { displayStep, type Job } from "../core/jobs.ts";
 import { knownAddress, sshDisplay } from "../core/ssh.ts";
-import { compose, docker, inStack } from "../core/stack.ts";
+import { compose, docker } from "../core/stack.ts";
 import {
   componentHealth,
   containerFor,
@@ -90,7 +90,7 @@ const act = (id: string) => ACTIONS.find((a) => a.id === id)!;
 
 export function deployPreview(cfg: Config, pi: PiCfg): string[] {
   const tgt = `${pi.user}@${knownAddress(pi)}`;
-  const lines = [
+  return [
     "docker info",
     ...COMPONENTS.map((c) => {
       const s = cfg.components[c].source;
@@ -100,13 +100,13 @@ export function deployPreview(cfg: Config, pi: PiCfg): string[] {
           ? `git ls-files -co --exclude-standard (in ${s.path}) | tar … -C .cache/ctx/${c}`
           : `# ${c}: no source, built from stack/${c}.Dockerfile`;
     }),
-    `docker buildx build --platform linux/arm64 --load -f stack/<component>.Dockerfile -t talos/<component>:<rev> .cache/ctx/<component>   # ×3, skipped if cached`,
-    `docker save talos/<component>:<rev> | zstd | ${sshDisplay(tgt, `zstd -dc | ${docker(pi)} load`)}   # only images the Pi lacks`,
-    `tar -cf - compose.yaml operator.conf gaia-manifest.json … | ${sshDisplay(tgt, `cd ~/${cfg.stack.dir} && tar -xf -`)}`,
-    `${sshDisplay(tgt, "<preflight: devices present, no conflicting services/containers>")}`,
-    sshDisplay(tgt, inStack(cfg, `${compose(pi)} up -d --remove-orphans`)),
+    `docker buildx build --platform linux/arm64 --load -f stack/<component>.Dockerfile -t talos/<component>:<rev> .cache/ctx/<component>   # ×${COMPONENTS.length}, skipped if cached`,
+    `docker save talos/<component>:<rev> | gzip | ${sshDisplay(tgt, `gunzip | ${docker(pi)} load`)}   # only layers the Pi lacks`,
+    `tar compose.yaml operator.conf bin/talos … | ${sshDisplay(tgt, `cd ~/${cfg.stack.dir} && tar -xf -`)}`,
+    sshDisplay(tgt, `cd ~/${cfg.stack.dir} && ${compose(pi)} config --quiet`),
+    sshDisplay(tgt, "talos retire-host-mediamtx"),
+    sshDisplay(tgt, "talos start"),
   ];
-  return lines;
 }
 
 export function DeployButton({ cfg, pi }: { cfg: Config; pi: PiCfg }) {
@@ -372,12 +372,12 @@ export function SourcesPanel({ cfg }: { cfg: Config }) {
                       <label>
                         <input type="radio" name="mode" value="git" checked={s.mode === "git"} /> Pinned branch/tag/commit from a remote
                       </label>
-                      <input name="repo" placeholder="https://github.com/talos-rit/…" value={s.mode === "git" ? s.repo : defaultRepo(c, cfg)} />
-                      <input name="ref" placeholder="branch, tag or commit" value={s.mode === "git" ? s.ref : ""} />
+                      <input name="repo" placeholder="https://github.com/talos-rit/…" value={s.mode === "git" ? s.repo : defaultRepo(c)} />
+                      <input name="ref" placeholder="branch, tag or commit" value={s.mode === "git" ? s.ref : defaultRef(c)} />
                       <label>
                         <input type="radio" name="mode" value="local" checked={s.mode === "local"} /> Working copy on this machine
                       </label>
-                      <input name="path" placeholder="../operator" value={s.mode === "local" ? s.path : defaultPath(c)} />
+                      <input name="path" placeholder={defaultPath(c) || "../repo"} value={s.mode === "local" ? s.path : defaultPath(c)} />
                       <div class="row">
                         <button class="btn primary" type="submit">
                           Save
@@ -404,11 +404,20 @@ export function SourcesPanel({ cfg }: { cfg: Config }) {
   );
 }
 
-const defaultRepo = (c: ComponentId, cfg: Config) => {
-  const s = cfg.components[c].source;
-  return s.mode === "git" ? s.repo : c === "operator" ? "https://github.com/talos-rit/operator.git" : "https://github.com/talos-rit/commander.git";
+// Prefill the field that isn't active from the shared gaia.config.yaml, so switching between
+// "pinned ref" and "working copy" offers this component's own repo, not someone else's.
+const sharedGit = (c: ComponentId) => {
+  const s = sharedSource(c);
+  return s?.mode === "git" ? s : undefined;
 };
-const defaultPath = (c: ComponentId) => (c === "operator" ? "../operator" : c === "vision" ? "../commander" : "");
+const defaultRepo = (c: ComponentId) => sharedGit(c)?.repo ?? "";
+const defaultRef = (c: ComponentId) => sharedGit(c)?.ref ?? "";
+const defaultPath = (c: ComponentId) => {
+  const s = sharedSource(c);
+  if (s?.mode === "local") return s.path;
+  const name = sharedGit(c)?.repo.replace(/\/+$/, "").split("/").pop()?.replace(/\.git$/, "");
+  return name ? `../${name}` : "";
+};
 
 export function FleetPanel({ cfg }: { cfg: Config }) {
   return (
@@ -440,7 +449,7 @@ export function FleetPanel({ cfg }: { cfg: Config }) {
           <button class="btn primary" type="submit">
             Build &amp; deploy
           </button>
-          <button class="btn" type="submit" name="buildOnly" value="1" title="Build the three arm64 images locally without touching any Pi">
+          <button class="btn" type="submit" name="buildOnly" value="1" title="Build the arm64 images locally without touching any Pi">
             Build only
           </button>
         </div>

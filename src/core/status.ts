@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
 import { COMPONENTS, type ComponentId, type Config, type PiCfg } from "./config.ts";
-import { runRemote, Unreachable, sq } from "./ssh.ts";
+import { learnAddresses, runRemote, Unreachable, sq } from "./ssh.ts";
 import { cameraDevice, docker, serialDevice } from "./stack.ts";
 
 export const PROBE_PATH = resolve(import.meta.dir, "probe.py");
@@ -38,6 +38,8 @@ export interface RtspResult {
   bytes?: number;
   error?: string;
   at?: number;
+  /** Pi clock when measured (compare with container start times, which are Pi clock too). */
+  pi_t?: number;
 }
 
 export interface Manifest {
@@ -60,12 +62,19 @@ export interface ProbeData {
     mem_total_mb: number;
     cma_mb: number;
     disk_free_gb: number;
+    ips?: string[];
+    machine_id?: string;
   };
   units: Record<string, string>;
   runtime: { kind: string; up: boolean; error: string | null };
   containers?: Container[];
   devices: Record<"serial" | "camera" | "encoder", { path: string; exists: boolean; target: string | null }>;
-  stack: { deployed: boolean; manifest: Manifest | null };
+  stack: { deployed: boolean; manifest: Manifest | null; helper_sha?: string | null; helper_linked?: boolean };
+  mediamtx?: {
+    api: boolean;
+    error: string | null;
+    paths?: { name: string; ready: boolean; tracks: string[] | null; bytes_received: number; readers: number; source: string | null }[];
+  };
   operator: { listening: boolean; log: { age_s: number; tail: string[] } | null };
   vision: {
     reachable: boolean;
@@ -131,6 +140,7 @@ async function pollOnce(cfg: Config, pi: PiCfg, rtsp: boolean) {
     const res = await runRemote(pi, probeCommand(cfg, pi, rtsp), { stdin: PROBE, timeoutMs: 20000 });
     if (res.code !== 0) throw new Error(res.stderr.trim().split("\n").slice(-3).join(" ") || `probe exit ${res.code}`);
     const data = JSON.parse(res.stdout) as ProbeData;
+    if (data.host.ips?.length) learnAddresses(pi, data.host.hostname, data.host.ips);
     const seq = data.vision.observations?.sequence ?? undefined;
     const last = prevSeq.get(pi.id);
     if (seq != null) prevSeq.set(pi.id, seq);
@@ -139,7 +149,7 @@ async function pollOnce(cfg: Config, pi: PiCfg, rtsp: boolean) {
       at: Date.now(),
       probeMs: Date.now() - t0,
       data,
-      rtsp: data.rtsp ? { ...data.rtsp, at: Date.now() } : prev.rtsp,
+      rtsp: data.rtsp ? { ...data.rtsp, at: Date.now(), pi_t: data.t } : prev.rtsp,
       seqAdvancing: seq != null && last != null ? seq > last : undefined,
     });
   } catch (e) {
@@ -208,7 +218,11 @@ export function containerFor(cfg: Config, data: ProbeData | undefined, svc: Comp
   return data?.containers?.find((c) => c.project === cfg.stack.project && c.service === svc);
 }
 
-export const sinceStart = (c?: Container) => (c?.started_at ? (Date.now() - Date.parse(c.started_at)) / 1000 : Infinity);
+/**
+ * Seconds since the container started, by the *Pi's* clock (probe time `t`). The lab Pis have no
+ * internet and so no NTP; their clocks can be days off from this computer's.
+ */
+export const sinceStart = (c: Container | undefined, d: ProbeData) => (c?.started_at ? d.t - Date.parse(c.started_at) / 1000 : Infinity);
 
 function profileDetails(pi: PiCfg, d: ProbeData): string[] {
   const p = d.vision.control?.controller_profile;
@@ -230,7 +244,7 @@ export function componentHealth(cfg: Config, pi: PiCfg, st: PiState, svc: Compon
   const c = containerFor(cfg, d, svc);
   const gate = containerGate(c, d);
   if (gate) return gate;
-  const young = sinceStart(c) < 45;
+  const young = sinceStart(c, d) < 45;
 
   if (svc === "operator") {
     const details: string[] = [];
@@ -241,6 +255,15 @@ export function componentHealth(cfg: Config, pi: PiCfg, st: PiState, svc: Compon
     const vs = d.vision.status;
     // Faults come from the arm controller via Operator (Pi-Vision just relays them).
     if (vs?.fault) return { level: "bad", summary: `arm controller fault: ${vs.fault}`, details: [...details, "Power-cycle the controller, then restart Operator (it re-HOMEs)."] };
+    if (!pi.arm.telemetry) {
+      // TODO(TODO.md): drop this branch once Bluey's controller reports telemetry.
+      if (vs?.operator && !vs.operator.connected) return { level: "warn", summary: "listening; Pi-Vision not connected", details };
+      return {
+        level: "ok",
+        summary: vs ? "listening; Pi-Vision connected" : `listening on :${pi.arm.operatorPort}`,
+        details: [...details, ...profileDetails(pi, d), "this controller sends no telemetry (arm.telemetry: false), so arm health is unverified"],
+      };
+    }
     if (vs?.telemetry.received && (vs.telemetry.age_s ?? 99) < 3)
       return { level: "ok", summary: `arm telemetry ${vs.telemetry.age_s?.toFixed(1)}s old`, details: [...details, ...profileDetails(pi, d)] };
     if (vs?.telemetry.received)
@@ -254,9 +277,14 @@ export function componentHealth(cfg: Config, pi: PiCfg, st: PiState, svc: Compon
 
   if (svc === "camera") {
     if (!d.devices.camera.exists) return { level: "bad", summary: `${d.devices.camera.path} missing`, details: ["Check the USB cable, then Re-apply USB rules."] };
-    if (d.units["mediamtx.service"] !== "active") return { level: "bad", summary: "MediaMTX (host RTSP server) not running", details: ["Troubleshoot > Restart MediaMTX"] };
+    const inStack = !!containerFor(cfg, d, "mediamtx");
+    if (!inStack && d.units["mediamtx.service"] !== "active")
+      return { level: "bad", summary: "no RTSP server running", details: ["MediaMTX runs in the stack after the next Deploy."] };
+    const path = d.mediamtx?.paths?.find((p) => p.name === pi.arm.rtspPath);
+    if (d.mediamtx?.api && !path?.ready)
+      return { level: young ? "warn" : "bad", summary: young ? "starting…" : `not publishing to MediaMTX path "${pi.arm.rtspPath}"`, details: ["Open Logs to see ffmpeg's error."] };
     const r = st.rtsp;
-    if (!r || (r.at && c?.started_at && r.at < Date.parse(c.started_at)))
+    if (!r || (r.pi_t && c?.started_at && r.pi_t * 1000 < Date.parse(c.started_at)))
       return { level: "unknown", summary: "checking stream…", details: [] };
     if (r.ok) {
       const expected = Number(fmtFps(r.fps));
@@ -268,6 +296,19 @@ export function componentHealth(cfg: Config, pi: PiCfg, st: PiState, svc: Compon
       };
     }
     return { level: young ? "warn" : "bad", summary: young ? "starting…" : "no RTSP frames", details: [r.error ?? "", r.url] };
+  }
+
+  if (svc === "mediamtx") {
+    const m = d.mediamtx;
+    if (!m?.api) return { level: young ? "warn" : "bad", summary: young ? "starting…" : "API not answering on 127.0.0.1:9997", details: [m?.error ?? ""] };
+    const path = m.paths?.find((p) => p.name === pi.arm.rtspPath);
+    const others = (m.paths ?? []).filter((p) => p !== path).map((p) => p.name);
+    if (!path?.ready) return { level: "warn", summary: `up; nothing published on "${pi.arm.rtspPath}" yet`, details: others.length ? [`other paths: ${others.join(", ")}`] : [] };
+    return {
+      level: "ok",
+      summary: `"${path.name}" live, ${path.readers} reader${path.readers === 1 ? "" : "s"}`,
+      details: [`${(path.tracks ?? []).join(", ")} · ${(path.bytes_received / 1e6).toFixed(0)} MB received`, ...(others.length ? [`other paths: ${others.join(", ")}`] : [])],
+    };
   }
 
   // vision
@@ -283,7 +324,12 @@ export function componentHealth(cfg: Config, pi: PiCfg, st: PiState, svc: Compon
   const ctl = v.control;
   if (ctl && !ctl.has_profile_field)
     return { level: "warn", summary: "doesn't report controller_profile: Commander will refuse to move the arm", details: [...details, "This Pi-Vision build lacks the dual-arm integration (controller profile passthrough)."] };
-  if (ctl && ctl.controller_profile !== pi.arm.controller)
+  // Pi-Vision learns the profile from Operator's "PROFILE <name>" message, so it's null whenever
+  // Operator isn't running or connected: that's "nothing to check yet", not a mismatch.
+  const opUp = containerFor(cfg, d, "operator")?.state === "running" && d.operator.listening;
+  const noOperator = !!ctl && !ctl.controller_profile && (!opUp || s.operator?.connected === false);
+  if (noOperator) details.push(`Operator ${opUp ? "not connected" : "not running"}: no arm control (controller profile is checked once it connects)`);
+  else if (ctl && ctl.controller_profile !== pi.arm.controller)
     return { level: "warn", summary: `controller profile ${ctl.controller_profile ?? "unknown"} ≠ expected ${pi.arm.controller}: Commander blocks motion`, details };
   if (s.pose && !s.pose.available) return { level: "bad", summary: "pose model unavailable", details };
   if (o && o.enabled === false) return { level: "warn", summary: "perception paused", details };
@@ -303,6 +349,14 @@ export function hostHealth(cfg: Config, pi: PiCfg, st: PiState): Health & { fore
   if (!d.runtime.up) issues.push({ level: "warn", text: d.runtime.error ?? "Docker not reachable" });
   for (const u of ["camera-streamer.service", "pivision-integration.service"])
     if (d.units[u] === "active") issues.push({ level: "bad", text: `legacy ${u} is running (conflicts with containers)` });
+  if (d.units["mediamtx.service"] === "active" && containerFor(cfg, d, "mediamtx"))
+    issues.push({ level: "bad", text: "host mediamtx.service is running too and holds port 8554 (Troubleshoot > Retire host MediaMTX service)" });
+  const twins = cfg.pis.filter((o) => o.id !== pi.id && d.host.machine_id && getState(o.id).data?.host.machine_id === d.host.machine_id);
+  if (twins.length)
+    issues.push({
+      level: "warn",
+      text: `same machine-id as ${twins.map((o) => o.name).join(", ")} (cloned SD card): expect .local name conflicts. Troubleshoot > Give this Pi its own identity`,
+    });
   if (d.host.throttled && d.host.throttled !== "0x0") issues.push({ level: "warn", text: `throttled=${d.host.throttled} (undervoltage/thermal)` });
   if ((d.host.temp_c ?? 0) > 75) issues.push({ level: "warn", text: `hot: ${d.host.temp_c}°C` });
   if (d.host.disk_free_gb < 3) issues.push({ level: "warn", text: `low disk: ${d.host.disk_free_gb} GB free` });
