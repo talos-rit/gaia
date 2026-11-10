@@ -7,10 +7,18 @@ import { docker, udevRules } from "./stack.ts";
 
 export type ActionScope = "stack" | "service" | "troubleshoot";
 
+/** Headings in the Troubleshoot menu, in display order. */
+export const TROUBLESHOOT_GROUPS = ["Devices", "Containers & disk", "System & network", "One-time setup"] as const;
+export type TroubleshootGroup = (typeof TROUBLESHOOT_GROUPS)[number];
+
 export interface Action {
   id: string;
   label: string;
   scope: ActionScope;
+  /** Troubleshoot menu heading. */
+  group?: TroubleshootGroup;
+  /** Destructive or disruptive: red in menus, red confirm button. */
+  danger?: boolean;
   description: string;
   /** Hidden for Pis where it doesn't make sense (e.g. ESP reset on a native controller). */
   applies?: (pi: PiCfg, cfg: Config) => boolean;
@@ -23,7 +31,7 @@ export interface Action {
 
 const remote = (label: string, cmd: string, extra: Partial<RemoteStep> = {}): RemoteStep => ({ label, where: "remote", cmd, ...extra });
 
-const homeWarning = (pi: PiCfg) =>
+export const homeWarning = (pi: PiCfg) =>
   pi.arm.homesOnStart
     ? `Starting Operator on ${pi.name} physically HOMEs the arm.\n\nIs the workspace clear and the controller powered?`
     : undefined;
@@ -89,6 +97,7 @@ export const ACTIONS: Action[] = [
   },
   {
     id: "down",
+    danger: true,
     label: "Remove containers",
     scope: "stack",
     description: "docker compose down: stop and delete the containers (images and logs are kept).",
@@ -97,6 +106,7 @@ export const ACTIONS: Action[] = [
   },
   {
     id: "poweroff",
+    danger: true,
     label: "Power off",
     scope: "stack",
     description:
@@ -140,6 +150,7 @@ export const ACTIONS: Action[] = [
     id: "runtime-start",
     label: "Start Docker runtime",
     scope: "troubleshoot",
+    group: "Containers & disk",
     description: "The lab Pis' isolated Docker daemon (talos-docker.service) is not started at boot; start it after a reboot.",
     applies: (pi) => pi.runtime === "isolated",
     steps: () => [t("Start Docker runtime", "runtime")],
@@ -148,6 +159,7 @@ export const ACTIONS: Action[] = [
     id: "usb-rules",
     label: "Re-apply USB rules",
     scope: "troubleshoot",
+    group: "Devices",
     description:
       "Install udev rules for /dev/talos-<pi>-serial and -camera, then re-trigger udev. This is what install-usb-rules.sh did, " +
       "and it fixes missing device names after re-plugging or a reboot.",
@@ -158,6 +170,7 @@ export const ACTIONS: Action[] = [
     id: "usb-detect",
     label: "Detect USB devices",
     scope: "troubleshoot",
+    group: "Devices",
     description: "List serial adapters and cameras with the udev ID_PATH / vendor / product values used in gaia.config.yaml.",
     steps: () => [t("List USB serial + video devices", "usb-detect")],
   },
@@ -165,6 +178,7 @@ export const ACTIONS: Action[] = [
     id: "device-owners",
     label: "Who owns the serial/camera?",
     scope: "troubleshoot",
+    group: "Devices",
     description: "Show processes holding the arm's serial port and camera (two owners on one serial port = trouble).",
     steps: () => [t("fuser", "owners")],
   },
@@ -172,6 +186,7 @@ export const ACTIONS: Action[] = [
     id: "esp-reset",
     label: "Reset ESP (pulse RTS)",
     scope: "troubleshoot",
+    group: "Devices",
     description:
       "Reset the ESP32 through the USB-serial adapter's RTS line. Fixed Bluey on 2026-11-05, when the ESP stopped answering after a Pi reboot.",
     applies: (pi) => pi.arm.controller.startsWith("esp"),
@@ -182,6 +197,7 @@ export const ACTIONS: Action[] = [
     id: "mediamtx-restart",
     label: "Restart MediaMTX",
     scope: "troubleshoot",
+    group: "Containers & disk",
     description: "Restart the RTSP server, then the camera so it publishes again. Commander and Pi-Vision reconnect by themselves.",
     steps: () => [t("Restart MediaMTX and the camera", "restart mediamtx camera")],
   },
@@ -189,6 +205,7 @@ export const ACTIONS: Action[] = [
     id: "retire-host-mediamtx",
     label: "Retire host MediaMTX service",
     scope: "troubleshoot",
+    group: "One-time setup",
     description:
       "MediaMTX now runs in the stack. Stop and disable the old host mediamtx.service, which would hold port 8554. Deploy does this too. " +
       "Undo: sudo systemctl enable --now mediamtx",
@@ -198,6 +215,7 @@ export const ACTIONS: Action[] = [
     id: "stop-legacy-services",
     label: "Stop legacy host services",
     scope: "troubleshoot",
+    group: "Containers & disk",
     description: "Stop the pre-container camera-streamer / pivision-integration systemd units that grab the camera and ports.",
     steps: () => [t("Stop units", "stop-legacy")],
   },
@@ -205,6 +223,7 @@ export const ACTIONS: Action[] = [
     id: "stop-foreign",
     label: "Stop non-Gaia containers",
     scope: "troubleshoot",
+    group: "Containers & disk",
     description: "Stop containers from other compose projects, e.g. the old talos-arms stack from two-pi-20261104.",
     confirm: (pi) => `Stop every running container on ${pi.name} that Gaia didn't deploy?`,
     steps: () => [t("Stop foreign containers", "stop-foreign")],
@@ -213,6 +232,7 @@ export const ACTIONS: Action[] = [
     id: "host-check",
     label: "Check host health",
     scope: "troubleshoot",
+    group: "System & network",
     description: "Kernel, CMA (the hardware encoder needs 256 MiB or more), encoder device, throttling, temperature, disk and memory.",
     steps: () => [t("Host checks", "host-check")],
   },
@@ -220,6 +240,7 @@ export const ACTIONS: Action[] = [
     id: "kernel-log",
     label: "Kernel warnings (this boot)",
     scope: "troubleshoot",
+    group: "System & network",
     description: "USB disconnects, codec faults and undervoltage show up here.",
     steps: () => [t("journalctl -k", "kernel-log")],
   },
@@ -227,6 +248,7 @@ export const ACTIONS: Action[] = [
     id: "avahi-restart",
     label: "Fix mDNS name (restart avahi)",
     scope: "troubleshoot",
+    group: "System & network",
     description:
       "If <pi>.local stopped resolving (avahi renamed the Pi to <pi>-2.local after a name conflict), restart avahi to reclaim the name. " +
       "Works even when .local doesn't resolve: Gaia also tries the addresses it last saw the Pi on.",
@@ -236,6 +258,7 @@ export const ACTIONS: Action[] = [
     id: "install-docker",
     label: "Install Docker",
     scope: "troubleshoot",
+    group: "One-time setup",
     description:
       "Set up a normal Docker install from Docker's official Debian packages, downloaded on this computer (the Pis have no internet). " +
       "Stops the old isolated runtime if there is one (nothing is deleted). Safe to re-run to update Docker.",
@@ -256,8 +279,10 @@ export const ACTIONS: Action[] = [
   },
   {
     id: "remove-isolated-runtime",
+    danger: true,
     label: "Delete the old isolated runtime",
     scope: "troubleshoot",
+    group: "One-time setup",
     description:
       "After moving to a normal Docker install: delete talos-docker.service, /opt/talos-docker and its images in /var/lib/talos-docker " +
       "(2-3 GB). ~/talos-containers is left alone.",
@@ -277,13 +302,16 @@ export const ACTIONS: Action[] = [
     id: "sync-clock",
     label: "Set clock from this computer",
     scope: "troubleshoot",
+    group: "System & network",
     description: "The Pis have no internet time and no battery-backed clock, so after a reboot they can be days behind. Deploy does this too.",
     steps: () => [syncClock()],
   },
   {
     id: "unique-identity",
+    danger: true,
     label: "Give this Pi its own identity (cloned SD card)",
     scope: "troubleshoot",
+    group: "One-time setup",
     description:
       "Pis flashed from one copied SD card share /etc/machine-id and NetworkManager's secret key, so they generate the same IPv6 " +
       "addresses. avahi sees the duplicate and renames one Pi to <name>-2.local. This makes new ones (old files kept as *.before-gaia), " +
@@ -301,15 +329,18 @@ export const ACTIONS: Action[] = [
   },
   {
     id: "image-prune",
-    label: "Disk: prune dangling images",
+    label: "Prune dangling images",
     scope: "troubleshoot",
+    group: "Containers & disk",
     description: "Remove untagged image layers left by repeated deploys. Tagged images, kept for rollback, are left alone.",
     steps: () => [t("Prune", "prune")],
   },
   {
     id: "reboot",
+    danger: true,
     label: "Reboot Pi",
     scope: "troubleshoot",
+    group: "System & network",
     description: "Reboot. MediaMTX, the camera and Pi-Vision come back by themselves (with a normal Docker install); Operator waits for Start.",
     confirm: (pi) => `Reboot ${pi.name}? Operator stays stopped until you Start it.`,
     steps: () => [remote("Reboot", "sudo -n systemctl reboot", { allowFail: true })],

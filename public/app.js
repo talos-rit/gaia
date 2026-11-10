@@ -8,7 +8,7 @@ const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 const drawer = () => $("#drawer");
 
 // Activity stays collapsed while commands run (it's half the screen): progress shows in the
-// collapsed bar (current job + step, thin moving line) and as a badge on the Activity button.
+// collapsed bar (current job + step, thin moving line, a badge next to "Activity").
 // A failure leaves a red badge until Activity is opened.
 const running = new Set();
 let unseenFailure = false;
@@ -29,6 +29,10 @@ function setActivity(state, text) {
     b.textContent = "✗";
   } else b.textContent = "";
 }
+const fmtDuration = (ms) => {
+  const s = Math.round(ms / 1000);
+  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s`;
+};
 const jobTitle = (jobEl) => $("summary b", jobEl)?.textContent ?? "job";
 
 document.addEventListener("click", (e) => {
@@ -67,6 +71,30 @@ document.addEventListener(
   true,
 );
 
+// Keep command previews (.peek) on screen: shift them left when they'd run past the right edge
+// (or right past the left edge), and flip them above the button when they'd go under the
+// Activity drawer. Measured on hover, since the right fix depends on where the button is.
+document.addEventListener("mouseover", (e) => {
+  const act = e.target.closest?.(".act");
+  const peek = act && $(":scope > .peek", act);
+  if (!peek || act.contains(e.relatedTarget)) return;
+  peek.style.translate = "";
+  requestAnimationFrame(() => {
+    const r = peek.getBoundingClientRect();
+    if (!r.width) return;
+    const margin = 8;
+    const dx = r.right > innerWidth - margin ? innerWidth - margin - r.right : r.left < margin ? margin - r.left : 0;
+    const floor = Math.min(innerHeight, drawer()?.getBoundingClientRect().top ?? innerHeight) - margin;
+    let dy = 0;
+    if (r.bottom > floor) {
+      const a = act.getBoundingClientRect();
+      // Below the button: flip above it if that fits better. Beside a menu item: slide up.
+      dy = r.top >= a.bottom - 1 && a.top - r.height - 6 > margin ? -(r.height + a.height + 12) : floor - r.bottom;
+    }
+    if (dx || dy) peek.style.translate = `${dx}px ${dy}px`;
+  });
+});
+
 // ---- jobs --------------------------------------------------------------------------------
 const STATUS_ICON = { pending: "○", running: "◌", ok: "✓", failed: "✗", skipped: "–", warn: "!" };
 
@@ -76,7 +104,7 @@ function stepEl(jobEl, index) {
   if (!li) {
     li = document.createElement("li");
     li.dataset.i = index;
-    li.innerHTML = `<div class="step-head"><span class="st"></span> <span class="label"></span></div><pre class="cmd"></pre><pre class="out"></pre>`;
+    li.innerHTML = `<div class="step-head"><span class="st"></span> <span class="label"></span><span class="step-note"></span></div><pre class="cmd"></pre><pre class="out"></pre>`;
     list.appendChild(li);
   }
   return li;
@@ -97,6 +125,7 @@ function attachJob(jobEl) {
     st.className = `st ${d.status}`;
     st.textContent = STATUS_ICON[d.status] ?? "";
     if (d.label) $(".label", li).textContent = d.label;
+    $(".step-note", li).textContent = d.status === "skipped" ? "skipped" : "";
     if (d.status === "running") setActivity("running", `◌ ${jobTitle(jobEl)} · ${$(".label", li).textContent}`);
     if (d.status === "failed") jobEl.dataset.failedStep = $(".label", li).textContent;
     if (d.display) $(".cmd", li).textContent = `$ ${d.display}`;
@@ -119,6 +148,8 @@ function attachJob(jobEl) {
     const chip = $(".chip-status", jobEl);
     chip.className = `chip-status ${status}`;
     chip.textContent = status;
+    const dur = $(".dur", jobEl);
+    if (dur) dur.textContent = ` · took ${fmtDuration(Date.now() - Number(jobEl.dataset.started))}`;
     es.close();
     running.delete(jobEl.dataset.job);
     if (status === "failed") unseenFailure = true;
@@ -192,18 +223,71 @@ document.addEventListener("htmx:afterSwap", (e) => {
   }
 });
 
-// Deploy form: only ask about homing when "start after deploy" is on and a homing arm is targeted.
+// ---- confirm dialog ----------------------------------------------------------------------
+// Replaces the browser's confirm() for every hx-confirm. The element can add
+// data-confirm-subject (big text: which Pi), data-confirm-action (the button's label) and
+// data-confirm-tone ("home": the arm moves; "danger": disruptive), which colours the dialog.
+
+function askConfirm({ message, subject, action, tone }) {
+  const dlg = $("#confirm");
+  dlg.className = tone ?? "";
+  const subj = $("[data-subject]", dlg);
+  subj.textContent = subject ?? "";
+  subj.hidden = !subject;
+  $("[data-message]", dlg).replaceChildren(
+    ...message.split(/\n\s*\n/).map((para) => {
+      const p = document.createElement("p");
+      p.textContent = para.trim();
+      return p;
+    }),
+  );
+  const ok = $("[data-ok]", dlg);
+  ok.textContent = action ?? "OK";
+  ok.className = `btn ${tone === "danger" ? "danger-fill" : tone === "home" ? "warn-fill" : "primary"}`;
+  dlg.returnValue = "";
+  dlg.showModal();
+  // Risky actions default to Cancel, so a stray Enter never homes an arm or powers a Pi off.
+  (tone ? $("[data-cancel]", dlg) : ok).focus();
+  return new Promise((resolve) => dlg.addEventListener("close", () => resolve(dlg.returnValue === "ok"), { once: true }));
+}
+
 document.addEventListener("htmx:confirm", (e) => {
-  const form = e.target.closest?.("form.deploy-form");
-  if (!form || e.target !== form) return;
-  if (e.detail.triggeringEvent?.submitter?.name === "buildOnly") return;
-  const fd = new FormData(form);
-  const homing = (form.dataset.homing || "").split(",").filter(Boolean);
-  const hits = fd.getAll("targets").filter((t) => homing.includes(t));
-  if (!fd.get("start") || !hits.length) return;
+  const elt = e.detail.elt;
+  let message = e.detail.question;
+  let data = (elt.closest?.("[data-confirm-action]") ?? elt).dataset ?? {};
+  // Deploy form: only ask about homing when "start after deploy" is on and a homing arm is targeted.
+  const form = elt.closest?.("form.deploy-form");
+  if (form && elt === form) {
+    if (e.detail.triggeringEvent?.submitter?.name === "buildOnly") return;
+    const fd = new FormData(form);
+    const homing = (form.dataset.homing || "").split(",").filter(Boolean);
+    const hits = fd.getAll("targets").filter((t) => homing.includes(t));
+    if (!fd.get("start") || !hits.length) return;
+    const names = hits.map((id) => $(`#pi-${id} h2`)?.textContent ?? id).join(", ");
+    message = `Deploy will start the stack on ${names}.\n\nIf Operator's image changed, the arm HOMEs. Is the workspace clear?`;
+    data = { confirmSubject: names, confirmAction: "Build & deploy", confirmTone: "home" };
+  }
+  if (!message) return;
   e.preventDefault();
-  if (confirm(`Deploy will start the stack on ${hits.join(", ")}.\n\nIf Operator's image changed, the arm HOMEs. Is the workspace clear?`)) e.detail.issueRequest(true);
+  askConfirm({ message, subject: data.confirmSubject, action: data.confirmAction, tone: data.confirmTone }).then((yes) => yes && e.detail.issueRequest(true));
 });
+
+// ---- tab title ---------------------------------------------------------------------------
+// "Gaia · 1 problem (Bluey)" while a Pi needs attention, so a background tab still says so.
+let titleQueued = false;
+function updateTitle() {
+  if (titleQueued) return;
+  titleQueued = true;
+  requestAnimationFrame(() => {
+    titleQueued = false;
+    const names = $$(".fleet .chip")
+      .filter((c) => $(".dot.bad, .dot.warn", c))
+      .map((c) => c.dataset.name);
+    document.title = names.length ? `Gaia · ${names.length} problem${names.length > 1 ? "s" : ""} (${names.join(", ")})` : "Gaia";
+  });
+}
+document.addEventListener("htmx:oobAfterSwap", updateTitle);
+document.addEventListener("htmx:afterSettle", updateTitle);
 
 document.addEventListener("DOMContentLoaded", () => {
   for (const j of $$(".job[data-status=running]")) attachJob(j);

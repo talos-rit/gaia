@@ -204,14 +204,15 @@ export function refreshSoon(piId: string, delayMs = 800) {
 
 // ---- health rules --------------------------------------------------------------------------
 
-export type Level = "ok" | "warn" | "bad" | "off" | "unknown";
+/** "partial" is Pi-level only: reachable, but not every service is running. */
+export type Level = "ok" | "partial" | "warn" | "bad" | "off" | "unknown";
 export interface Health {
   level: Level;
   summary: string;
   details: string[];
 }
 
-const RANK: Record<Level, number> = { ok: 0, off: 1, unknown: 2, warn: 3, bad: 4 };
+const RANK: Record<Level, number> = { ok: 0, partial: 1, off: 1, unknown: 2, warn: 3, bad: 4 };
 export const worst = (levels: Level[]): Level => levels.reduce((a, b) => (RANK[b] > RANK[a] ? b : a), "ok" as Level);
 
 export function containerFor(cfg: Config, data: ProbeData | undefined, svc: ComponentId): Container | undefined {
@@ -318,7 +319,7 @@ export function componentHealth(cfg: Config, pi: PiCfg, st: PiState, svc: Compon
   const s = v.status;
   const o = v.observations;
   const details = [
-    `state ${s.state}${s.tracking_enabled ? " · tracking ON" : " · tracking off"}`,
+    `state ${s.state.toLowerCase()}${s.tracking_enabled ? " · tracking ON" : " · tracking off"}`,
     o ? `${o.detections} ${o.detections === 1 ? "person" : "people"} · inference ${(o.inference_s * 1000).toFixed(0)} ms · seq ${o.sequence}${st.seqAdvancing === false ? " (stalled)" : ""}` : "",
   ].filter(Boolean);
   const ctl = v.control;
@@ -373,7 +374,9 @@ export function hostHealth(cfg: Config, pi: PiCfg, st: PiState): Health & { fore
 
 export function piLevel(cfg: Config, pi: PiCfg, st: PiState): Level {
   if (st.reachable === false && !st.data) return "bad";
-  return worst([hostHealth(cfg, pi, st).level, ...COMPONENTS.map((c) => componentHealth(cfg, pi, st, c).level)]);
+  const level = worst([hostHealth(cfg, pi, st).level, ...COMPONENTS.map((c) => componentHealth(cfg, pi, st, c).level)]);
+  // Grey would read as "powered off": an online Pi with something stopped is "partial" instead.
+  return st.data && (level === "off" || level === "unknown") ? "partial" : level;
 }
 
 export function fmtAge(s: number): string {

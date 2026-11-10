@@ -22,6 +22,7 @@ import { knownAddress, readLines, runArgv, sq, sshDisplay, sshOpts, target } fro
 import { rtspUrl, type Images } from "./core/stack.ts";
 import { getState, probeCommand, PROBE_PATH, refreshSoon, startPolling } from "./core/status.ts";
 import { ErrorNote, FleetPanel, JobView, Layout, Modal, PiCard, PiStatus, SourcesPanel } from "./ui/components.tsx";
+import { Icon } from "./ui/icons.tsx";
 
 const app = new Hono();
 const cfgNow = () => loadConfig();
@@ -48,16 +49,13 @@ app.get("/vendor/htmx.min.js", () => new Response(Bun.file(resolve(ROOT, "node_m
 app.get("/", (c) => {
   const cfg = cfgNow();
   return c.html(
-    <Layout title="Gaia · Talos stack">
+    <Layout title="Gaia">
       <header class="top">
         <h1>
           Gaia <span class="muted">Talos Pi stack manager</span>
         </h1>
         <span class="spacer" />
         <span id="local-docker" hx-get="/local/status" hx-trigger="load, every 15s" hx-swap="innerHTML" />
-        <button class="btn ghost" data-toggle-drawer>
-          Activity <span id="activity-badge" />
-        </button>
       </header>
       {cfg.problems.length > 0 && (
         <div class="banner bad">
@@ -81,14 +79,16 @@ app.get("/", (c) => {
         </div>
       </main>
       <aside id="drawer" class="drawer">
-        <header>
-          <h3>Activity</h3>
-          <span id="activity-status" class="muted" data-toggle-drawer title="Show Activity">
+        <header data-toggle-drawer title="Show or hide Activity">
+          <h3>
+            Activity <span id="activity-badge" />
+          </h3>
+          <span id="activity-status" class="muted">
             Every command Gaia runs appears here with its output.
           </span>
           <span class="spacer" />
-          <button class="btn ghost small" data-toggle-drawer>
-            Hide
+          <button class="btn ghost small icon-only drawer-toggle" aria-label="Show or hide Activity">
+            <Icon name="chevron" />
           </button>
         </header>
         <div id="jobs">
@@ -99,6 +99,18 @@ app.get("/", (c) => {
       </aside>
       <dialog id="modal">
         <div id="modal-body" />
+      </dialog>
+      <dialog id="confirm">
+        <form method="dialog" class="confirm-body">
+          <div class="confirm-subject" data-subject />
+          <div class="confirm-message" data-message />
+          <div class="confirm-buttons">
+            <button class="btn ghost" value="cancel" data-cancel>
+              Cancel
+            </button>
+            <button class="btn" value="ok" data-ok />
+          </div>
+        </form>
       </dialog>
     </Layout>,
   );

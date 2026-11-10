@@ -1,6 +1,6 @@
 import type { Child } from "hono/jsx";
-import { ACTIONS, type Action } from "../core/actions.ts";
-import { COMPONENT_LABEL, COMPONENTS, describeSource, localOverrideFor, sharedSource, type ComponentId, type Config, type PiCfg } from "../core/config.ts";
+import { ACTIONS, homeWarning, TROUBLESHOOT_GROUPS, type Action } from "../core/actions.ts";
+import { COMPONENT_LABEL, COMPONENTS, localOverrideFor, sharedSource, type ComponentId, type Config, type PiCfg } from "../core/config.ts";
 import { displayStep, type Job } from "../core/jobs.ts";
 import { knownAddress, sshDisplay } from "../core/ssh.ts";
 import { compose, docker } from "../core/stack.ts";
@@ -11,12 +11,34 @@ import {
   getState,
   hostHealth,
   piLevel,
+  type Container,
   type Level,
+  type Manifest,
   type PiState,
 } from "../core/status.ts";
 import { busyJob } from "../core/jobs.ts";
+import { Icon, type IconName } from "./icons.tsx";
 
-export const Dot = ({ level, title }: { level: Level; title?: string }) => <span class={`dot ${level}`} title={title ?? level} />;
+const LEVEL_TITLE: Record<Level, string> = {
+  ok: "healthy",
+  partial: "online; not everything is running",
+  warn: "needs attention",
+  bad: "problem",
+  off: "stopped",
+  unknown: "unknown",
+};
+
+export const Dot = ({ level, title }: { level: Level; title?: string }) => <span class={`dot ${level}`} title={title ?? LEVEL_TITLE[level]} />;
+
+/**
+ * Data attributes for app.js's confirm dialog (replaces the browser's confirm()). The message
+ * itself stays in hx-confirm; these name the subject, the button, and the tone.
+ */
+export const confirmAttrs = (subject: string, action: string, tone?: "home" | "danger") => ({
+  "data-confirm-subject": subject,
+  "data-confirm-action": action,
+  "data-confirm-tone": tone,
+});
 
 export function Layout({ title, children }: { title: string; children: Child }) {
   return (
@@ -49,6 +71,19 @@ function commandsFor(a: Action, cfg: Config, pi: PiCfg, service?: ComponentId): 
   return a.steps(cfg, pi, service).map((s) => displayStep(s, pi));
 }
 
+/** Service/stack buttons hide by state: `running` ones only show while something runs, `stopped` ones while something is stopped. */
+type When = "running" | "stopped";
+
+const ACTION_ICON: Record<string, IconName> = {
+  start: "play",
+  stop: "stop",
+  restart: "restart",
+  poweroff: "power",
+  "svc-start": "play",
+  "svc-stop": "stop",
+  "svc-restart": "restart",
+};
+
 export function ActionButton({
   action,
   cfg,
@@ -56,6 +91,7 @@ export function ActionButton({
   service,
   variant,
   label,
+  when,
 }: {
   action: Action;
   cfg: Config;
@@ -63,19 +99,25 @@ export function ActionButton({
   service?: ComponentId;
   variant?: string;
   label?: string;
+  when?: When;
 }) {
   const confirm = action.confirm?.(pi, service);
+  const tone = action.danger ? "danger" : confirm && confirm === homeWarning(pi) ? "home" : undefined;
+  const what = service ? `${action.label} ${COMPONENT_LABEL[service]}` : action.scope === "stack" && !action.danger ? `${action.label} ${pi.name}` : action.label;
+  const icon = variant?.includes("menu-item") ? undefined : ACTION_ICON[action.id];
   return (
-    <span class="act">
+    <span class={`act${when ? ` when-${when}` : ""}`}>
       <button
         class={`btn ${variant ?? ""}`}
         hx-post={`/pis/${pi.id}/actions/${action.id}`}
         hx-vals={service ? JSON.stringify({ service }) : undefined}
         hx-confirm={confirm}
+        {...(confirm ? confirmAttrs(pi.name, what, tone) : {})}
         hx-target="#jobs"
         hx-swap="afterbegin"
       >
-        {label ?? action.label}
+        {icon && <Icon name={icon} />}
+        <span class="btn-label">{label ?? action.label}</span>
       </button>
       <Peek
         title={`${action.label}${service ? ` ${COMPONENT_LABEL[service]}` : ""} on ${pi.name}`}
@@ -121,9 +163,11 @@ export function DeployButton({ cfg, pi }: { cfg: Config; pi: PiCfg }) {
             ? `Build and deploy the configured sources to ${pi.name}, then start it.\n\nIf Operator's image changed, its container is recreated and the arm HOMEs. Is the workspace clear?`
             : `Build and deploy the configured sources to ${pi.name}, then start it?`
         }
+        {...confirmAttrs(pi.name, `Deploy to ${pi.name}`, pi.arm.homesOnStart ? "home" : undefined)}
         hx-target="#jobs"
         hx-swap="afterbegin"
       >
+        <Icon name="upload" />
         Deploy
       </button>
       <Peek title={`Deploy to ${pi.name}`} description="Build images on this machine, copy them to the Pi over SSH, write compose.yaml, start." commands={deployPreview(cfg, pi)} />
@@ -150,23 +194,40 @@ export function PiCard({ cfg, pi }: { cfg: Config; pi: PiCfg }) {
       </header>
 
       <div class="toolbar">
-        <ActionButton action={act("start")} cfg={cfg} pi={pi} variant="good" />
-        <ActionButton action={act("stop")} cfg={cfg} pi={pi} />
-        <ActionButton action={act("restart")} cfg={cfg} pi={pi} />
+        <ActionButton action={act("start")} cfg={cfg} pi={pi} variant="good" when="stopped" />
+        <ActionButton action={act("stop")} cfg={cfg} pi={pi} when="running" />
+        <ActionButton action={act("restart")} cfg={cfg} pi={pi} when="running" />
         <DeployButton cfg={cfg} pi={pi} />
         <ActionButton action={act("poweroff")} cfg={cfg} pi={pi} variant="danger" />
         <span class="spacer" />
+        <span class="toolbar-menus">
         <details class="menu">
-          <summary class="btn ghost">Troubleshoot ▾</summary>
+          <summary class="btn ghost" title="Troubleshoot">
+            <Icon name="wrench" />
+            <span class="btn-label">Troubleshoot</span>
+          </summary>
           <div class="menu-list">
-            {troubleshoot.map((a) => (
-              <ActionButton action={a} cfg={cfg} pi={pi} variant="menu-item" />
-            ))}
-            <ActionButton action={act("down")} cfg={cfg} pi={pi} variant="menu-item danger" />
+            {TROUBLESHOOT_GROUPS.map((g) => {
+              const items = troubleshoot.filter((a) => a.group === g);
+              return (
+                items.length > 0 && (
+                  <div class="menu-group">
+                    <div class="menu-heading">{g}</div>
+                    {items.map((a) => (
+                      <ActionButton action={a} cfg={cfg} pi={pi} variant="menu-item" />
+                    ))}
+                    {g === "Containers & disk" && <ActionButton action={act("down")} cfg={cfg} pi={pi} variant="menu-item danger" />}
+                  </div>
+                )
+              );
+            })}
           </div>
         </details>
         <details class="menu">
-          <summary class="btn ghost">More ▾</summary>
+          <summary class="btn ghost icon-only" title="More">
+            <Icon name="more" />
+            <span class="sr-only">More</span>
+          </summary>
           <div class="menu-list">
             <button class="btn menu-item" hx-get={`/pis/${pi.id}/files`} hx-target="#modal-body">
               Generated files (compose.yaml, udev rules…)
@@ -175,10 +236,11 @@ export function PiCard({ cfg, pi }: { cfg: Config; pi: PiCfg }) {
               How is status checked?
             </button>
             <a class="btn menu-item" href={`http://${knownAddress(pi)}:${pi.arm.visionPort}/`} target="_blank" rel="noreferrer">
-              Pi-Vision dashboard ↗
+              Pi-Vision dashboard <Icon name="external" />
             </a>
           </div>
         </details>
+        </span>
       </div>
 
       <div id={`deployed-${pi.id}`} class="deployed muted" />
@@ -191,21 +253,24 @@ export function PiCard({ cfg, pi }: { cfg: Config; pi: PiCfg }) {
             </div>
             <div class="comp-actions">
               <button class="btn small" hx-get={`/pis/${pi.id}/logs/${c}`} hx-target="#modal-body" title="Tail container logs">
-                Logs
+                <Icon name="logs" />
+                <span class="btn-label">Logs</span>
               </button>
               {c === "operator" && (
                 <button class="btn small" hx-get={`/pis/${pi.id}/logs/operator?file=1`} hx-target="#modal-body" title="tail -F ~/talos-stack/logs/operator.log">
-                  Log file
+                  <Icon name="file" />
+                  <span class="btn-label">Log file</span>
                 </button>
               )}
               {c === "camera" && (
                 <button class="btn small" hx-get={`/pis/${pi.id}/snapshot`} hx-target="#modal-body" title="Grab one frame from the RTSP stream">
-                  Snapshot
+                  <Icon name="camera" />
+                  <span class="btn-label">Snapshot</span>
                 </button>
               )}
-              <ActionButton action={act("svc-restart")} cfg={cfg} pi={pi} service={c} variant="small" />
-              <ActionButton action={act("svc-stop")} cfg={cfg} pi={pi} service={c} variant="small" />
-              <ActionButton action={act("svc-start")} cfg={cfg} pi={pi} service={c} variant="small" />
+              <ActionButton action={act("svc-restart")} cfg={cfg} pi={pi} service={c} variant="small" when="running" />
+              <ActionButton action={act("svc-stop")} cfg={cfg} pi={pi} service={c} variant="small" when="running" />
+              <ActionButton action={act("svc-start")} cfg={cfg} pi={pi} service={c} variant="small" when="stopped" />
             </div>
           </div>
         ))}
@@ -221,6 +286,35 @@ function ago(iso?: string) {
   return iso ? fmtAge((Date.now() - Date.parse(iso)) / 1000) + " ago" : "?";
 }
 
+/** Is the service's container running? Drives which Start/Stop/Restart buttons show (see app.css). */
+function runState(st: PiState, ctr: Container | undefined): "running" | "stopped" | "unknown" {
+  if (!st.data) return "unknown";
+  return ctr?.state === "running" ? "running" : "stopped";
+}
+
+/** "8bb425f (feat/x)" for what was deployed, plus a warning when the container runs something else. */
+function Revision({ manifest, c, ctr }: { manifest: Manifest | null | undefined; c: ComponentId; ctr: Container | undefined }) {
+  const m = manifest?.components[c];
+  if (!m) return null;
+  const stale = ctr?.state === "running" && m.image && ctr.image !== m.image;
+  return (
+    <span class="rev" title={`${m.ref ? `${m.ref} · ` : ""}${m.image}`}>
+      {m.revision ? m.revision.slice(0, 7) : m.image.split(":")[1]}
+      {m.dirty && <span class="tag warn">dirty</span>}
+      {stale && <span class="tag bad" title={`running ${ctr!.image}`}>running older image</span>}
+    </span>
+  );
+}
+
+/** One host reading; `level` colours the value when it's out of range. */
+const Stat = ({ k, v, level }: { k: string; v: Child; level?: "warn" | "bad" }) => (
+  <span class={`stat${level ? ` ${level}` : ""}`}>
+    <span class="k">{k}</span> {v}
+  </span>
+);
+
+const over = (v: number | null | undefined, warn: number, bad: number) => (v == null ? undefined : v >= bad ? "bad" : v >= warn ? "warn" : undefined);
+
 /** Out-of-band fragments that refresh the dynamic parts of a Pi card. */
 export function PiStatus({ cfg, pi }: { cfg: Config; pi: PiCfg }) {
   const st: PiState = getState(pi.id);
@@ -234,7 +328,7 @@ export function PiStatus({ cfg, pi }: { cfg: Config; pi: PiCfg }) {
       <span id={`dot-${pi.id}`} hx-swap-oob="true">
         <Dot level={level} />
       </span>
-      <a id={`chip-${pi.id}`} hx-swap-oob="true" class="chip" href={`#pi-${pi.id}`}>
+      <a id={`chip-${pi.id}`} hx-swap-oob="true" class="chip" href={`#pi-${pi.id}`} data-name={pi.name}>
         <Dot level={level} /> {pi.name}
         {busy && <span class="muted"> · {busy.title}…</span>}
       </a>
@@ -245,22 +339,9 @@ export function PiStatus({ cfg, pi }: { cfg: Config; pi: PiCfg }) {
 
       <div id={`deployed-${pi.id}`} hx-swap-oob="true" class="deployed muted">
         {!d ? null : manifest ? (
-          <>
-            Deployed {ago(manifest.deployedAt)} by {manifest.deployedBy}:{" "}
-            {COMPONENTS.map((c) => {
-              const m = manifest.components[c];
-              const running = containerFor(cfg, d, c);
-              const stale = running?.state === "running" && m?.image && running.image !== m.image;
-              return (
-                <span class="prov" title={m?.image}>
-                  {COMPONENT_LABEL[c]} <span class="mono">{m?.revision ? m.revision.slice(0, 7) : m?.image.split(":")[1]}</span>
-                  {m?.ref && <span> ({m.ref})</span>}
-                  {m?.dirty && <span class="tag warn">dirty</span>}
-                  {stale && <span class="tag bad" title={`running ${running!.image}`}>running older image</span>}
-                </span>
-              );
-            })}
-          </>
+          <span title={COMPONENTS.map((c) => manifest.components[c]?.image).filter(Boolean).join("\n")}>
+            Deployed {ago(manifest.deployedAt)} by {manifest.deployedBy}
+          </span>
         ) : d.stack.deployed ? (
           "Deployed without a Gaia manifest"
         ) : (
@@ -271,13 +352,22 @@ export function PiStatus({ cfg, pi }: { cfg: Config; pi: PiCfg }) {
       {COMPONENTS.map((c) => {
         const h = componentHealth(cfg, pi, st, c);
         const ctr = containerFor(cfg, d, c);
+        // The summary often *is* the container status ("Exited (0) 16 minutes ago"); don't say it twice.
+        const status = ctr && !h.summary.includes(ctr.status) ? ctr.status : undefined;
         return (
-          <div id={`comp-${pi.id}-${c}`} hx-swap-oob="true" class="comp-main">
+          <div
+            id={`comp-${pi.id}-${c}`}
+            hx-swap-oob="true"
+            class="comp-main"
+            data-run={runState(st, ctr)}
+            title={ctr ? `${ctr.name} · ${ctr.image}` : undefined}
+          >
             <Dot level={h.level} /> <b>{COMPONENT_LABEL[c]}</b> <span>{h.summary}</span>
             <div class="comp-details muted">
-              {ctr && (
-                <span class="mono" title={ctr.image}>
-                  {ctr.name}: {ctr.status}
+              {(status || manifest?.components[c]) && (
+                <span class="meta">
+                  {status && <span>{status}</span>}
+                  <Revision manifest={manifest} c={c} ctr={ctr} />
                 </span>
               )}
               {h.details.filter(Boolean).map((x) => (
@@ -289,16 +379,21 @@ export function PiStatus({ cfg, pi }: { cfg: Config; pi: PiCfg }) {
       })}
 
       <div id={`host-${pi.id}`} hx-swap-oob="true" class="host muted">
-        {busy && (
-          <div class="busy">
-            ⏳ {busy.title} in progress
-          </div>
-        )}
+        {busy && <div class="busy">{busy.title} in progress…</div>}
         {d ? (
-          <div>
-            {d.host.hostname} · {d.host.kernel} · up {fmtAge(d.host.uptime_s)} · {d.host.temp_c}°C · load {d.host.load.toFixed(2)} ·{" "}
-            {(d.host.mem_avail_mb / 1024).toFixed(1)}/{(d.host.mem_total_mb / 1024).toFixed(1)} GB free · {d.host.disk_free_gb} GB disk · docker{" "}
-            {d.runtime.up ? "up" : "down"} · polled {st.at ? fmtAge((Date.now() - st.at) / 1000) : "?"} ago ({st.probeMs} ms)
+          <div class="stats" title={`${d.host.hostname} · kernel ${d.host.kernel} · probe took ${st.probeMs} ms`}>
+            <Stat k="up" v={fmtAge(d.host.uptime_s)} />
+            <Stat k="temp" v={d.host.temp_c == null ? "?" : `${d.host.temp_c}°C`} level={over(d.host.temp_c, 70, 80)} />
+            <Stat k="load" v={d.host.load.toFixed(2)} level={over(d.host.load, 3.5, 6)} />
+            <Stat
+              k="mem"
+              v={`${(d.host.mem_avail_mb / 1024).toFixed(1)} / ${(d.host.mem_total_mb / 1024).toFixed(1)} GB free`}
+              level={d.host.mem_avail_mb < 150 ? "bad" : d.host.mem_avail_mb < 300 ? "warn" : undefined}
+            />
+            <Stat k="disk" v={`${d.host.disk_free_gb} GB free`} level={d.host.disk_free_gb < 1 ? "bad" : d.host.disk_free_gb < 3 ? "warn" : undefined} />
+            {!d.runtime.up && <Stat k="docker" v="down" level="bad" />}
+            <span class="spacer" />
+            <span class="polled">polled {st.at ? fmtAge((Date.now() - st.at) / 1000) : "?"} ago</span>
           </div>
         ) : (
           <div>{st.reachable === null ? "Connecting…" : `Unreachable: ${st.error}`}</div>
@@ -315,19 +410,30 @@ export function PiStatus({ cfg, pi }: { cfg: Config; pi: PiCfg }) {
   );
 }
 
+const STEP_ICON: Record<string, string> = { pending: "○", running: "◌", ok: "✓", failed: "✗", skipped: "–", warn: "!" };
+
+export function fmtDuration(ms: number) {
+  const s = Math.round(ms / 1000);
+  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s`;
+}
+
 export function JobView({ job }: { job: Job }) {
   return (
-    <details class={`job ${job.status}`} data-job={job.id} data-status={job.status} open={job.status === "running" || undefined}>
+    <details class={`job ${job.status}`} data-job={job.id} data-status={job.status} data-started={job.startedAt} open={job.status === "running" || undefined}>
       <summary>
         <span class={`chip-status ${job.status}`}>{job.status}</span> <b>{job.title}</b>{" "}
-        <span class="muted">{new Date(job.startedAt).toLocaleTimeString()}</span>
+        <span class="muted">
+          {new Date(job.startedAt).toLocaleTimeString()}
+          <span class="dur">{job.endedAt ? ` · took ${fmtDuration(job.endedAt - job.startedAt)}` : ""}</span>
+        </span>
       </summary>
       <ol class="steps">
         {job.status !== "running" &&
           job.steps.map((s, i) => (
             <li data-i={i} class={s.status}>
               <div class="step-head">
-                <span class={`st ${s.status}`} /> {s.label}
+                <span class={`st ${s.status}`}>{STEP_ICON[s.status]}</span> <span class="label">{s.label}</span>
+                {s.status === "skipped" && <span class="step-note">skipped</span>}
               </div>
               <pre class="cmd">$ {s.display}</pre>
               <pre class="out">{s.lines.map((l) => l.text).join("\n")}</pre>
@@ -367,7 +473,10 @@ export function SourcesPanel({ cfg }: { cfg: Config }) {
                 <span class="spacer" />
                 {s.mode !== "builtin" && (
                   <details class="menu right">
-                    <summary class="btn small ghost">Change</summary>
+                    <summary class="btn small ghost">
+                      <Icon name="pencil" />
+                      Change
+                    </summary>
                     <form class="menu-list form" hx-post={`/sources/${c}`} hx-target="#sources" hx-swap="outerHTML">
                       <label>
                         <input type="radio" name="mode" value="git" checked={s.mode === "git"} /> Pinned branch/tag/commit from a remote
@@ -392,7 +501,7 @@ export function SourcesPanel({ cfg }: { cfg: Config }) {
                   </details>
                 )}
               </div>
-              <div class="mono">{describeSource(s)}</div>
+              {s.mode !== "builtin" && <div class="mono">{s.mode === "git" ? repoName(s.repo) : `working copy ${s.path}`}</div>}
               <div class="mono muted" hx-get={`/sources/${c}/resolve`} hx-trigger="load" hx-swap="innerHTML">
                 resolving…
               </div>
@@ -403,6 +512,9 @@ export function SourcesPanel({ cfg }: { cfg: Config }) {
     </section>
   );
 }
+
+// The ref is on the resolve line below ("feat/x → 8bb425f"), so the repo line leaves it out.
+const repoName = (repo: string) => repo.replace(/^https:\/\/github\.com\//, "").replace(/\.git$/, "");
 
 // Prefill the field that isn't active from the shared gaia.config.yaml, so switching between
 // "pinned ref" and "working copy" offers this component's own repo, not someone else's.
@@ -420,63 +532,82 @@ const defaultPath = (c: ComponentId) => {
 };
 
 export function FleetPanel({ cfg }: { cfg: Config }) {
+  const homing = cfg.pis.filter((p) => p.arm.homesOnStart);
+  const everyone = cfg.pis.map((p) => p.name).join(", ");
+  const FLEET_ICON: Record<string, IconName> = { start: "play", stop: "stop", restart: "restart" };
   return (
     <section class="card fleet">
       <h3>Fleet</h3>
       <div class="chips">
         {cfg.pis.map((pi) => (
-          <a id={`chip-${pi.id}`} class="chip" href={`#pi-${pi.id}`}>
+          <a id={`chip-${pi.id}`} class="chip" href={`#pi-${pi.id}`} data-name={pi.name}>
             <Dot level="unknown" /> {pi.name}
           </a>
         ))}
       </div>
-      <form class="deploy-form" hx-post="/deploy" hx-target="#jobs" hx-swap="afterbegin" data-homing={cfg.pis.filter((p) => p.arm.homesOnStart).map((p) => p.id).join(",")}>
-        <div class="row wrap">
-          <span>Deploy to:</span>
+      <form class="deploy-form group" hx-post="/deploy" hx-target="#jobs" hx-swap="afterbegin" data-homing={homing.map((p) => p.id).join(",")}>
+        <h4>Deploy</h4>
+        <div class="field">
+          <span class="field-label">To</span>
           {cfg.pis.map((pi) => (
             <label>
               <input type="checkbox" name="targets" value={pi.id} checked /> {pi.name}
             </label>
           ))}
         </div>
-        <div class="row wrap">
+        <div class="field">
+          <span class="field-label">Options</span>
           <label title="Run docker compose up -d after copying. Unchecked = only stage the new images and files.">
             <input type="checkbox" name="start" checked /> start after deploy
           </label>
           <label title="Rebuild even if an image with identical inputs exists">
             <input type="checkbox" name="force" /> force rebuild
           </label>
+        </div>
+        <div class="row">
           <button class="btn primary" type="submit">
+            <Icon name="upload" />
             Build &amp; deploy
           </button>
           <button class="btn" type="submit" name="buildOnly" value="1" title="Build the arm64 images locally without touching any Pi">
+            <Icon name="package" />
             Build only
           </button>
         </div>
       </form>
-      <div class="row wrap">
-        <span>All Pis:</span>
-        {["start", "stop", "restart"].map((a) => (
+      <div class="group">
+        <h4>All Pis</h4>
+        <div class="row wrap">
+          {["start", "stop", "restart"].map((a) => {
+            const label = `${a[0]!.toUpperCase() + a.slice(1)} all`;
+            const confirm = a !== "stop" && homing.length ? `${label}? This HOMEs: ${homing.map((p) => p.name).join(", ")}.\n\nIs every workspace clear?` : undefined;
+            return (
+              <button
+                class="btn small"
+                hx-post={`/fleet/${a}`}
+                hx-target="#jobs"
+                hx-swap="afterbegin"
+                hx-confirm={confirm}
+                {...(confirm ? confirmAttrs(everyone, label, "home") : {})}
+              >
+                <Icon name={FLEET_ICON[a]!} />
+                {label}
+              </button>
+            );
+          })}
           <button
-            class="btn small"
-            hx-post={`/fleet/${a}`}
+            class="btn small danger"
+            hx-post="/fleet/poweroff"
             hx-target="#jobs"
             hx-swap="afterbegin"
-            hx-confirm={a !== "stop" && cfg.pis.some((p) => p.arm.homesOnStart) ? `${a} every Pi? This HOMEs: ${cfg.pis.filter((p) => p.arm.homesOnStart).map((p) => p.name).join(", ")}.` : undefined}
+            hx-confirm={`End of day: stop every stack and shut down ${everyone}?\n\nUnplug only after each Pi's green LED stops flickering.`}
+            {...confirmAttrs(everyone, "Power off all", "danger")}
+            title="Stop containers, then sudo systemctl poweroff on every Pi"
           >
-            {a[0]!.toUpperCase() + a.slice(1)} all
+            <Icon name="power" />
+            Power off all
           </button>
-        ))}
-        <button
-          class="btn small danger"
-          hx-post="/fleet/poweroff"
-          hx-target="#jobs"
-          hx-swap="afterbegin"
-          hx-confirm={`End of day: stop every stack and shut down ${cfg.pis.map((p) => p.name).join(", ")}?\n\nUnplug only after each Pi's green LED stops flickering.`}
-          title="Stop containers, then sudo systemctl poweroff on every Pi"
-        >
-          Power off all
-        </button>
+        </div>
       </div>
     </section>
   );
@@ -487,8 +618,8 @@ export function Modal({ title, children }: { title: string; children: Child }) {
     <div class="modal-content">
       <header>
         <h3>{title}</h3>
-        <button class="btn ghost" data-close-modal>
-          ✕
+        <button class="btn ghost icon-only" data-close-modal title="Close">
+          <Icon name="close" />
         </button>
       </header>
       {children}
