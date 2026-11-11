@@ -140,6 +140,19 @@ export class Job {
   }
 }
 
+/** Plan every step up front (so the Activity drawer lists the whole job), then run them in order. */
+export async function runPlanned(job: Job, steps: Step[]) {
+  const idx = steps.map((s) => job.plan(s.label, displayStep(s, job.pi)));
+  for (let i = 0; i < steps.length; i++) {
+    try {
+      await job.run(steps[i]!, idx[i]);
+    } catch (e) {
+      for (const k of idx.slice(i + 1)) job.setStep(k, "skipped");
+      throw e;
+    }
+  }
+}
+
 export class StepFailed extends Error {
   constructor(
     readonly step: string,
@@ -152,6 +165,12 @@ export class StepFailed extends Error {
 const jobs: Job[] = [];
 const MAX_JOBS = 60;
 const busyPis = new Map<string, Job>();
+
+/** Anything a job can lock: a Pi, or a local resource such as the Commander checkout. */
+export interface Lockable {
+  id: string;
+  name: string;
+}
 
 export function listJobs(): Job[] {
   return jobs;
@@ -178,7 +197,7 @@ export function onJobFinished(fn: JobListener) {
 export function startJob(
   title: string,
   body: (job: Job) => Promise<void>,
-  opts: { pi?: PiCfg; exclusive?: PiCfg[] } = {},
+  opts: { pi?: PiCfg; exclusive?: Lockable[] } = {},
 ): Job {
   const job = new Job(title, opts.pi);
   for (const p of opts.exclusive ?? []) {

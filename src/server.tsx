@@ -17,11 +17,28 @@ import {
   type PiCfg,
 } from "./core/config.ts";
 import { deploy, resolveSource, stackFiles } from "./core/deploy.ts";
-import { displayStep, getJob, listJobs, onJobFinished, startJob, type Job } from "./core/jobs.ts";
+import { displayStep, getJob, listJobs, onJobFinished, runPlanned, startJob, type Job, type Step } from "./core/jobs.ts";
+import {
+  COMMANDER_ACTIONS,
+  COMMANDER_LOCK,
+  commanderConfigFiles,
+  commanderStatus,
+  fetchBranches,
+  fetchCommand,
+  invalidateCommanderStatus,
+  isCloned,
+  LOG_FILE,
+  listBranches,
+  PREV_LOG_FILE,
+  switchSteps,
+  tailLog,
+  type CommanderAction,
+} from "./core/commander.ts";
 import { knownAddress, readLines, runArgv, sq, sshDisplay, sshOpts, target } from "./core/ssh.ts";
 import { rtspUrl, type Images } from "./core/stack.ts";
 import { getState, probeCommand, PROBE_PATH, refreshSoon, startPolling } from "./core/status.ts";
 import { ErrorNote, FleetPanel, JobView, Layout, Modal, PiCard, PiStatus, SourcesPanel } from "./ui/components.tsx";
+import { BranchForm, CommanderCard, CommanderStatusView } from "./ui/commander.tsx";
 import { Icon } from "./ui/icons.tsx";
 
 const app = new Hono();
@@ -46,8 +63,9 @@ app.get("/static/:file", (c) => {
 });
 app.get("/vendor/htmx.min.js", () => new Response(Bun.file(resolve(ROOT, "node_modules/htmx.org/dist/htmx.min.js")), { headers: { "content-type": "text/javascript" } }));
 
-app.get("/", (c) => {
+app.get("/", async (c) => {
   const cfg = cfgNow();
+  const commander = await commanderStatus(cfg);
   return c.html(
     <Layout title="Gaia">
       <header class="top">
@@ -70,6 +88,7 @@ app.get("/", (c) => {
       <main>
         <div class="side">
           <FleetPanel cfg={cfg} />
+          <CommanderCard cfg={cfg} status={commander} />
           <SourcesPanel cfg={cfg} />
         </div>
         <div class="grid">
@@ -206,6 +225,7 @@ function launch(cfg: Config, pi: PiCfg, actionId: string, service?: ComponentId)
 }
 
 onJobFinished((job) => {
+  invalidateCommanderStatus();
   if (job.pi) refreshSoon(job.pi.id);
   else for (const pi of cfgNow().pis) refreshSoon(pi.id);
 });
@@ -466,6 +486,114 @@ app.post("/sources/:c/reset", (c) => {
   if (!COMPONENTS.includes(comp)) return c.text("?", 404);
   clearLocalSource(comp);
   return c.html(<SourcesPanel cfg={cfgNow()} />);
+});
+
+// ---- commander (runs on this machine) ------------------------------------------------------
+
+function launchCommander(title: string, steps: Step[]): Job {
+  invalidateCommanderStatus();
+  return startJob(`Commander: ${title}`, (j) => runPlanned(j, steps), { exclusive: [COMMANDER_LOCK] });
+}
+
+app.get("/commander/status", async (c) => {
+  const cfg = cfgNow();
+  const status = await commanderStatus(cfg);
+  // Cloned or removed since the card was drawn: redraw the whole card (its buttons differ).
+  if (String(Number(status.cloned)) !== c.req.query("cloned")) return c.html(<CommanderCard cfg={cfg} status={status} />);
+  return c.html(<CommanderStatusView cfg={cfg} status={status} />);
+});
+
+app.post("/commander/actions/:action", (c) => {
+  const cfg = cfgNow();
+  const id = c.req.param("action") as CommanderAction;
+  const action = COMMANDER_ACTIONS[id];
+  if (!action) return c.text("unknown action", 404);
+  if (id === "setup" ? isCloned(cfg) : !isCloned(cfg))
+    return c.html(<ErrorNote message={id === "setup" ? `${cfg.commander.path} is already a git checkout.` : `No Commander checkout at ${cfg.commander.path}; use Set up.`} />);
+  try {
+    return c.html(<JobView job={launchCommander(action.label, action.steps(cfg))} />);
+  } catch (e) {
+    return c.html(<ErrorNote message={(e as Error).message} />);
+  }
+});
+
+app.get("/commander/branches", async (c) => {
+  const cfg = cfgNow();
+  let fetched: { ok: boolean; output: string } | undefined;
+  if (c.req.query("fetch") === "1") {
+    const r = await fetchBranches(cfg);
+    fetched = { ok: r.code === 0, output: `$ ${fetchCommand(cfg).join(" ")}\n${(r.stdout + r.stderr).trim()}`.trim() };
+    invalidateCommanderStatus();
+  }
+  const [branches, status] = await Promise.all([listBranches(cfg), commanderStatus(cfg)]);
+  return c.html(<BranchForm branches={branches} current={status.git?.branch} fetched={fetched} />);
+});
+
+app.post("/commander/switch", async (c) => {
+  const cfg = cfgNow();
+  const b = await c.req.parseBody();
+  const branch = String(b.branch ?? "");
+  if (!(await listBranches(cfg)).some((x) => x.name === branch)) return c.html(<ErrorNote message={`unknown branch "${branch}"`} />);
+  try {
+    return c.html(<JobView job={launchCommander(`switch to ${branch}`, switchSteps(cfg, branch, b.rebuild === "1"))} />);
+  } catch (e) {
+    return c.html(<ErrorNote message={(e as Error).message} />);
+  }
+});
+
+app.get("/commander/logs", (c) => {
+  const prev = c.req.query("prev") === "1";
+  return c.html(
+    <Modal title={`Commander · ${prev ? "previous run's output" : "commander-web output"}`}>
+      <pre class="cmd">$ tail -n 300 {prev ? "" : "-F "}.cache/commander/{prev ? "commander.previous.log" : "commander.log"}</pre>
+      <div class="row">
+        <label>
+          <input type="checkbox" data-follow checked /> follow
+        </label>
+        <label>
+          <input type="checkbox" data-wrap /> wrap
+        </label>
+        <input type="search" placeholder="filter…" data-filter />
+        <span class="muted" data-logstate>
+          connecting…
+        </span>
+      </div>
+      <pre class="logs" data-logsrc={`/commander/logs/stream${prev ? "?prev=1" : ""}`} />
+    </Modal>,
+  );
+});
+
+app.get("/commander/logs/stream", (c) => {
+  const prev = c.req.query("prev") === "1";
+  return streamSSE(c, async (stream) => {
+    let aborted = false;
+    stream.onAbort(() => void (aborted = true));
+    await stream.writeSSE({ event: "open", data: "" });
+    const send = (l: string) => stream.writeSSE({ event: "line", data: l }).catch(() => void (aborted = true));
+    await tailLog(prev ? PREV_LOG_FILE : LOG_FILE, 300, send, () => aborted, !prev);
+    if (prev) await stream.writeSSE({ event: "end", data: "end of the previous run's output" }).catch(() => {});
+  });
+});
+
+app.get("/commander/files", (c) => {
+  const cfg = cfgNow();
+  const files = commanderConfigFiles(cfg);
+  return c.html(
+    <Modal title="Commander config files Gaia creates">
+      <p class="muted">
+        Generated from the Pis in <span class="mono">gaia.config.yaml</span> and <span class="mono">gaia.local.yaml</span>. Set up and Build &amp; run create each file in{" "}
+        <span class="mono">{cfg.commander.path}</span> only if it doesn't exist; an existing file is never touched. To regenerate one, delete it, then run Build &amp; run.
+      </p>
+      {files.map((f) => (
+        <details open>
+          <summary>
+            <span class="mono">{f.name}</span> <span class="muted">{f.exists ? "· exists, so Gaia leaves it alone" : "· missing, so Gaia will create it"}</span>
+          </summary>
+          <pre class="file">{f.body}</pre>
+        </details>
+      ))}
+    </Modal>,
+  );
 });
 
 // ---- boot -------------------------------------------------------------------------------

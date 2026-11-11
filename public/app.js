@@ -48,6 +48,9 @@ document.addEventListener("click", (e) => {
   }
 });
 
+// A form inside a dropdown (Commander's branch switch) starts a job: close the dropdown.
+document.addEventListener("submit", (e) => e.target.closest?.("details.menu")?.removeAttribute("open"));
+
 // Open a dropdown upward if there isn't room below it (above the Activity drawer), and cap its
 // height to the visible space so nothing ends up hidden behind the drawer or the header.
 document.addEventListener(
@@ -58,7 +61,7 @@ document.addEventListener(
     const list = $(".menu-list", d);
     if (!list) return;
     d.classList.remove("up");
-    list.style.maxHeight = list.style.overflowY = "";
+    list.style.maxHeight = list.style.overflowY = list.style.translate = "";
     const s = d.getBoundingClientRect();
     const floor = Math.min(window.innerHeight, drawer()?.getBoundingClientRect().top ?? window.innerHeight) - 8;
     const ceiling = ($("header.top")?.getBoundingClientRect().bottom ?? 0) + 8;
@@ -67,6 +70,10 @@ document.addEventListener(
     if (need > below && above > below) d.classList.add("up");
     const room = d.classList.contains("up") ? above : below;
     if (need > room) Object.assign(list.style, { maxHeight: `${Math.max(room, 120)}px`, overflowY: "auto" });
+    // Keep it on screen horizontally too (a right-aligned menu near the left edge runs off it).
+    const r = list.getBoundingClientRect();
+    const dx = r.left < 8 ? 8 - r.left : r.right > innerWidth - 8 ? innerWidth - 8 - r.right : 0;
+    if (dx) list.style.translate = `${dx}px 0`;
   },
   true,
 );

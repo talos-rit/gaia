@@ -57,7 +57,7 @@ export function Layout({ title, children }: { title: string; children: Child }) 
 }
 
 /** Hover card listing exactly what a button runs. */
-function Peek({ title, description, commands }: { title: string; description?: string; commands: string[] }) {
+export function Peek({ title, description, commands }: { title: string; description?: string; commands: string[] }) {
   return (
     <span class="peek" role="tooltip">
       <b>{title}</b>

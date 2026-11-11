@@ -68,8 +68,20 @@ export interface PiCfg {
   arm: ArmCfg;
 }
 
+/** The Commander checkout Gaia manages on this machine (not on a Pi). */
+export interface CommanderCfg {
+  /** As configured, relative to the Gaia checkout (for display). */
+  path: string;
+  /** Absolute path. */
+  dir: string;
+  repo: string;
+  /** Branch that Set up clones. */
+  branch: string;
+}
+
 export interface Config {
   server: { port: number };
+  commander: CommanderCfg;
   stack: { dir: string; project: string };
   components: { operator: OperatorCfg; vision: VisionCfg; camera: CameraCfg; mediamtx: MediamtxCfg };
   pis: PiCfg[];
@@ -163,7 +175,15 @@ export function loadConfig(): Config {
   }
   const stack = (raw.stack ?? {}) as Obj;
   const vision = (comps.vision ?? {}) as Obj;
+  const cmd = (raw.commander ?? {}) as Obj;
+  const cmdPath = String(cmd.path ?? "../commander");
   return {
+    commander: {
+      path: cmdPath,
+      dir: resolve(ROOT, cmdPath),
+      repo: String(cmd.repo ?? "https://github.com/talos-rit/commander.git"),
+      branch: String(cmd.branch ?? "main"),
+    },
     server: { port: Number(process.env.PORT ?? (raw.server as Obj | undefined)?.port ?? 4747) },
     stack: { dir: String(stack.dir ?? "talos-stack"), project: String(stack.project ?? "talos") },
     components: {

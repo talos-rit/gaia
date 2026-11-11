@@ -10,7 +10,7 @@ import { ROOT } from "./config.ts";
 import { readLines, sq, type RunResult } from "./ssh.ts";
 
 export type Stage =
-  | { kind: "proc"; argv: string[]; display?: string; env?: Record<string, string> }
+  | { kind: "proc"; argv: string[]; display?: string; env?: Record<string, string>; cwd?: string }
   | { kind: "source"; display: string; make: () => ReadableStream<Uint8Array> }
   | { kind: "xform"; display: string; make: (input: ReadableStream<Uint8Array>) => ReadableStream<Uint8Array> }
   | { kind: "sink"; display: string; consume: (input: ReadableStream<Uint8Array>) => Promise<void> }
@@ -95,6 +95,7 @@ export async function runPipeline(p: Pipeline, opts: PipeOpts = {}): Promise<Run
         waits.push(guard(() => s.consume(input)));
       } else {
         const pr = Bun.spawn(s.argv, {
+          cwd: s.cwd,
           stdin: stream ?? "ignore",
           stdout: "pipe",
           stderr: "pipe",

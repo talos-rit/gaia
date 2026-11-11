@@ -11,6 +11,15 @@ stack:
   dir: talos-stack # on each Pi, relative to the SSH user's home
   project: talos # docker compose project name -> containers talos-operator-1, ...
 
+# Commander runs on this machine (not on a Pi, not in Docker). Gaia clones it to `path` on
+# Set up, builds its web UI, and runs `uv run commander-web`. Set up also creates Commander's
+# config/robot_configs.local.yaml and config/app_settings.local.yaml from the Pis below,
+# but only when those files don't exist yet; Gaia never overwrites them.
+commander:
+  path: ../commander # relative to this Gaia checkout
+  repo: https://github.com/talos-rit/commander.git
+  branch: main # what Set up clones; switch branches from the Commander card
+
 # Where each image is built from. Sources:
 #   { mode: git,   repo: <url>, ref: <branch | tag | sha> }   clean checkout of exactly that ref
 #   { mode: local, path: ../operator }                         your working copy (tracked + untracked, minus .gitignore)

@@ -1,6 +1,6 @@
 # Gaia
 
-A small web app for deploying and running the Talos Pi stack (**Operator**, **Cam Streamer**, **MediaMTX**, **Pi-Vision**) on any number of Raspberry Pis, with every command it runs shown to you.
+A small web app for deploying and running the Talos Pi stack (**Operator**, **Cam Streamer**, **MediaMTX**, **Pi-Vision**) on any number of Raspberry Pis, plus **Commander** on your own machine, with every command it runs shown to you.
 
 ```sh
 bun install
@@ -55,6 +55,18 @@ Builds are cached by their inputs: commit or content hash, Dockerfile, and build
 >
 > Publishing at 10 fps from a 30 fps MJPEG capture needs `OUTPUT_FPS`, added on cam_streamer's `feat/output-fps` branch. An older script ignores it and publishes at 30 fps.
 
+## Commander
+
+The **Commander** card manages a Commander checkout on this machine (`commander.path` in `gaia.config.yaml`, `../commander` by default). It runs directly, not in Docker, and needs [uv](https://docs.astral.sh/uv/getting-started/installation/).
+
+- **Set up** (when there's no checkout yet): `git clone --branch <commander.branch>`, then the same steps as Build & run.
+- **Build & run**: create Commander's config files if they're missing, `uv sync --inexact` (no extras: Pi-Vision does the pose detection, so Commander needs neither YOLO nor MediaPipe), `bun install` and `bun run build` in `web/`, then (re)start `uv run commander-web`.
+- **Start / Stop / Restart** without rebuilding, **Logs** (live), **Branch** (fetch, `git switch`, `git pull --ff-only`, then optionally Build & run) and **Pull**.
+
+**Config files.** From the Pis in `gaia.config.yaml` + `gaia.local.yaml`, Gaia writes `config/robot_configs.local.yaml` (one entry per Pi: Operator port, RTSP URL, Pi-Vision URL, controller profile) and `config/app_settings.local.yaml` (feeds 1 and 2 = the first two Pis). It **only creates them when they don't exist** and never overwrites one. **More › Config files Gaia creates** shows what it would write, so you can copy entries into an existing file by hand.
+
+**The process.** commander-web runs detached, with its output in `.cache/commander/commander.log` (the previous run's in `commander.previous.log`), and Gaia tracks it through `.cache/commander/process.json`. It keeps running when Gaia restarts or stops; the next Gaia picks it up again. Stop is a Ctrl+C for its whole process group (SIGKILL after 20 s); on Windows it's `taskkill /T /F`. Gaia reads Commander's `web_host`/`web_port` from its app settings (and `COMMANDER_WEB_*` env vars) to link to it and check `/api/health`.
+
 ## Adding a Pi
 
 1. Flash Raspberry Pi OS Lite (64-bit), with SSH and your key enabled, and give it a unique hostname.
@@ -97,7 +109,7 @@ gaia.config.yaml      fleet + sources (shared)       gaia.local.yaml   personal 
 stack/                Dockerfiles, pinned Pi-Vision deps, mediamtx.yml
 src/core/             no UI code: config, ssh, actions, jobs, status probe, build/deploy, compose generation
 src/ui/, src/server.tsx   Hono + JSX + htmx; public/ has the small client script and CSS
-.cache/               git mirrors, build contexts, image archives, files last uploaded to each Pi
+.cache/               git mirrors, build contexts, image archives, files last uploaded to each Pi, commander/ (log, pid)
 ```
 
 `src/core` has no web dependencies, so a future Electron or installer front-end can reuse it as is.
