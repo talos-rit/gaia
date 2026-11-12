@@ -197,16 +197,17 @@ export function loadConfig(): Config {
   };
 }
 
+const LOCAL_HEADER =
+  "# Personal Gaia overrides (git-ignored). Deep-merged over gaia.config.yaml.\n" +
+  "# Written by the Gaia UI (or its MCP server); safe to hand-edit.\n";
+
 /** Persist a component source override to gaia.local.yaml (other local settings are preserved). */
 export function saveLocalSource(component: ComponentId, source: Source, extra: Obj = {}) {
   const local = readYaml(LOCAL_CONFIG_FILE);
   const comps = (local.components ?? {}) as Obj;
   comps[component] = { ...((comps[component] as Obj) ?? {}), ...extra, source };
   local.components = comps;
-  const header =
-    "# Personal Gaia overrides (git-ignored). Deep-merged over gaia.config.yaml.\n" +
-    "# Written by the Gaia UI; safe to hand-edit.\n";
-  writeFileSync(LOCAL_CONFIG_FILE, header + Bun.YAML.stringify(local, null, 2) + "\n");
+  writeFileSync(LOCAL_CONFIG_FILE, LOCAL_HEADER + Bun.YAML.stringify(local, null, 2) + "\n");
 }
 
 /** Remove a component override so the shared gaia.config.yaml default applies again. */
@@ -216,7 +217,7 @@ export function clearLocalSource(component: ComponentId) {
   if (isObj(comps[component])) delete (comps[component] as Obj).source;
   if (isObj(comps[component]) && Object.keys(comps[component] as Obj).length === 0) delete comps[component];
   local.components = comps;
-  writeFileSync(LOCAL_CONFIG_FILE, Bun.YAML.stringify(local, null, 2) + "\n");
+  writeFileSync(LOCAL_CONFIG_FILE, LOCAL_HEADER + Bun.YAML.stringify(local, null, 2) + "\n");
 }
 
 export function localOverrideFor(component: ComponentId): boolean {

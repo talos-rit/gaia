@@ -1,8 +1,6 @@
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { resolve } from "node:path";
-import { getAction } from "./core/actions.ts";
-import { helperHash, installHelperStep, talos } from "./core/helper.ts";
 import { proc } from "./core/pipeline.ts";
 import {
   COMPONENT_LABEL,
@@ -16,11 +14,12 @@ import {
   type Config,
   type PiCfg,
 } from "./core/config.ts";
-import { deploy, resolveSource, stackFiles } from "./core/deploy.ts";
-import { displayStep, getJob, listJobs, onJobFinished, runPlanned, startJob, type Job, type Step } from "./core/jobs.ts";
+import { resolveSource, stackFiles } from "./core/deploy.ts";
+import { getJob, listJobs, onJobFinished, startJob } from "./core/jobs.ts";
+import { ensureHelper, grabSnapshot, launch, launchCommander, launchDeploy, logsCommand, snapshotCommand } from "./core/ops.ts";
+import { mountMcp } from "./mcp.ts";
 import {
   COMMANDER_ACTIONS,
-  COMMANDER_LOCK,
   commanderConfigFiles,
   commanderStatus,
   fetchBranches,
@@ -51,9 +50,17 @@ const HOST = process.env.HOST ?? "127.0.0.1";
 app.use("*", async (c, next) => {
   const host = (c.req.header("host") ?? "").replace(/:\d+$/, "");
   if (HOST === "127.0.0.1" && !["localhost", "127.0.0.1", "[::1]"].includes(host)) return c.text("forbidden host", 403);
-  if (c.req.method !== "GET" && c.req.header("x-gaia") !== "1") return c.text("missing X-Gaia header", 403);
+  // /mcp is for agent harnesses, which can't send X-Gaia. A web page can't reach it either: it
+  // needs Content-Type: application/json (a CORS preflight, which Gaia never answers), and any
+  // Origin a browser sends must be Gaia's own.
+  if (c.req.path === "/mcp") {
+    const origin = c.req.header("origin");
+    if (origin && !/^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/.test(origin)) return c.text("forbidden origin", 403);
+  } else if (c.req.method !== "GET" && c.req.header("x-gaia") !== "1") return c.text("missing X-Gaia header", 403);
   await next();
 });
+
+mountMcp(app, cfgNow);
 
 const STATIC: Record<string, string> = { "app.css": "text/css", "app.js": "text/javascript" };
 app.get("/static/:file", (c) => {
@@ -178,52 +185,6 @@ app.post("/local/colima-start", (c) => {
 
 // ---- actions ----------------------------------------------------------------------------
 
-// ---- talos helper on the Pi ---------------------------------------------------------------
-
-const helperInstalled = new Map<string, string>(); // pi id -> hash we installed this session
-
-function helperCurrent(cfg: Config, pi: PiCfg): boolean {
-  const want = helperHash(cfg, pi);
-  const st = getState(pi.id).data?.stack;
-  return helperInstalled.get(pi.id) === want || (st?.helper_sha === want && !!st.helper_linked);
-}
-
-/** For views that run `talos …` outside a job (logs, snapshot): install the helper first if needed, as a visible job. */
-async function ensureHelper(cfg: Config, pi: PiCfg) {
-  if (helperCurrent(cfg, pi)) return;
-  const job = startJob(`${pi.name}: install the talos helper`, async (j) => void (await j.run(installHelperStep(cfg, pi))), { pi });
-  await new Promise<void>((r) => (job.status !== "running" ? r() : job.subscribe((e) => e.type === "done" && r())));
-  if (job.status === "ok") helperInstalled.set(pi.id, helperHash(cfg, pi));
-}
-
-function launch(cfg: Config, pi: PiCfg, actionId: string, service?: ComponentId): Job {
-  const action = getAction(actionId);
-  if (!action) throw new Error(`unknown action ${actionId}`);
-  const title = `${pi.name}: ${action.label}${service ? ` ${COMPONENT_LABEL[service]}` : ""}`;
-  const exclusive = action.scope === "troubleshoot" && !action.confirm ? [] : [pi];
-  if (action.run) return startJob(title, (j) => action.run!(j, cfg, pi), { pi, exclusive });
-  // Actions are `talos <command>` calls; add a step that installs/updates the helper when the Pi lacks the current one.
-  const usesHelper = action.steps(cfg, pi, service).some((s) => s.where === "remote" && s.cmd.startsWith("talos "));
-  const steps = [...(usesHelper && !helperCurrent(cfg, pi) ? [installHelperStep(cfg, pi)] : []), ...action.steps(cfg, pi, service)];
-  const job = startJob(
-    title,
-    async (j) => {
-      const idx = steps.map((s) => j.plan(s.label, displayStep(s, pi)));
-      for (let i = 0; i < steps.length; i++) {
-        try {
-          await j.run(steps[i]!, idx[i]);
-        } catch (e) {
-          for (const k of idx.slice(i + 1)) j.setStep(k, "skipped");
-          throw e;
-        }
-        if (steps[i] && steps[i]!.label === installHelperStep(cfg, pi).label) helperInstalled.set(pi.id, helperHash(cfg, pi));
-      }
-    },
-    { pi, exclusive },
-  );
-  return job;
-}
-
 onJobFinished((job) => {
   invalidateCommanderStatus();
   if (job.pi) refreshSoon(job.pi.id);
@@ -264,16 +225,8 @@ app.post("/deploy", async (c) => {
   const ids = ([] as string[]).concat((body.targets as string | string[]) ?? []);
   const pis = ids.map((id) => getPi(cfg, id)).filter((p): p is PiCfg => !!p);
   const buildOnly = body.buildOnly === "1";
-  if (!pis.length && !buildOnly) return c.html(<ErrorNote message="Select at least one Pi to deploy to." />);
-  if (cfg.problems.length) return c.html(<ErrorNote message={`Fix config problems first: ${cfg.problems.join("; ")}`} />);
   try {
-    const targets = buildOnly ? [] : pis;
-    const title = buildOnly ? "Build images (no deploy)" : `Deploy → ${pis.map((p) => p.name).join(", ")}`;
-    const job = startJob(title, (j) => deploy(j, cfg, targets, { start: body.start === "on", force: body.force === "on" }), {
-      pi: targets.length === 1 ? targets[0] : undefined,
-      exclusive: targets,
-    });
-    return c.html(<JobView job={job} />);
+    return c.html(<JobView job={launchDeploy(cfg, { pis, buildOnly, start: body.start === "on", force: body.force === "on" })} />);
   } catch (e) {
     return c.html(<ErrorNote message={(e as Error).message} />);
   }
@@ -317,11 +270,6 @@ app.get("/jobs/:id/events", (c) => {
 });
 
 // ---- logs -------------------------------------------------------------------------------
-
-function logsCommand(svc: ComponentId, file: boolean, tail: number) {
-  // `timeout` makes sure the remote follower dies even if the SSH channel lingers.
-  return file ? `timeout 3600 ${talos(`oplog -n ${tail} -F`)}` : `timeout 3600 ${talos(`logs ${svc} -f --tail ${tail}`)}`;
-}
 
 app.get("/pis/:id/logs/:svc", (c) => {
   const cfg = cfgNow();
@@ -377,8 +325,6 @@ app.get("/pis/:id/logs/:svc/stream", async (c) => {
 
 // ---- snapshot ---------------------------------------------------------------------------
 
-const snapshotCommand = () => talos("snapshot");
-
 app.get("/pis/:id/snapshot", (c) => {
   const cfg = cfgNow();
   const pi = getPi(cfg, c.req.param("id"));
@@ -404,11 +350,9 @@ app.get("/pis/:id/snapshot.jpg", async (c) => {
   const cfg = cfgNow();
   const pi = getPi(cfg, c.req.param("id"));
   if (!pi) return c.text("not found", 404);
-  await ensureHelper(cfg, pi);
-  const proc = Bun.spawn(["ssh", ...sshOpts(pi), await target(pi), snapshotCommand()], { stdout: "pipe", stderr: "pipe" });
-  const [buf, code] = await Promise.all([new Response(proc.stdout).arrayBuffer(), proc.exited]);
-  if (code !== 0 || buf.byteLength === 0) return c.text(await new Response(proc.stderr).text(), 502);
-  return new Response(buf, { headers: { "content-type": "image/jpeg", "cache-control": "no-store" } });
+  const r = await grabSnapshot(cfg, pi);
+  if (!r.ok) return c.text(r.error, 502);
+  return new Response(r.jpeg, { headers: { "content-type": "image/jpeg", "cache-control": "no-store" } });
 });
 
 // ---- transparency views -----------------------------------------------------------------
@@ -489,11 +433,6 @@ app.post("/sources/:c/reset", (c) => {
 });
 
 // ---- commander (runs on this machine) ------------------------------------------------------
-
-function launchCommander(title: string, steps: Step[]): Job {
-  invalidateCommanderStatus();
-  return startJob(`Commander: ${title}`, (j) => runPlanned(j, steps), { exclusive: [COMMANDER_LOCK] });
-}
 
 app.get("/commander/status", async (c) => {
   const cfg = cfgNow();

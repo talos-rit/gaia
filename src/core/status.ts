@@ -107,7 +107,7 @@ export interface PiState {
 }
 
 const states = new Map<string, PiState>();
-const prevSeq = new Map<string, number>();
+const prevSeq = new Map<string, { seq: number; at: number }>();
 const wakeups = new Map<string, () => void>();
 
 export function getState(piId: string): PiState {
@@ -143,14 +143,16 @@ async function pollOnce(cfg: Config, pi: PiCfg, rtsp: boolean) {
     if (data.host.ips?.length) learnAddresses(pi, data.host.hostname, data.host.ips);
     const seq = data.vision.observations?.sequence ?? undefined;
     const last = prevSeq.get(pi.id);
-    if (seq != null) prevSeq.set(pi.id, seq);
+    // An extra poll (pollNow) can land a moment after a regular one; too soon to judge whether observations advance.
+    const tooSoon = last != null && Date.now() - last.at < 2000;
+    if (seq != null && !tooSoon) prevSeq.set(pi.id, { seq, at: Date.now() });
     states.set(pi.id, {
       reachable: true,
       at: Date.now(),
       probeMs: Date.now() - t0,
       data,
       rtsp: data.rtsp ? { ...data.rtsp, at: Date.now(), pi_t: data.t } : prev.rtsp,
-      seqAdvancing: seq != null && last != null ? seq > last : undefined,
+      seqAdvancing: tooSoon ? prev.seqAdvancing : seq != null && last != null ? seq > last.seq : undefined,
     });
   } catch (e) {
     states.set(pi.id, {
@@ -195,6 +197,12 @@ export function startPolling(loadCfg: () => Config) {
   };
   ensure();
   setInterval(ensure, 10000);
+}
+
+/** Poll right away (RTSP check included) and resolve with the fresh state. Runs alongside the loop; probes are read-only. */
+export async function pollNow(cfg: Config, pi: PiCfg): Promise<PiState> {
+  await pollOnce(cfg, pi, true);
+  return getState(pi.id);
 }
 
 /** Poll now (after an action finishes) instead of waiting for the next cycle. */

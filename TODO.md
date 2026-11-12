@@ -97,16 +97,14 @@ which crashes the MJPEG dashboard stream whenever a person is detected.
       `gaia.config.yaml`, so Gaia checks for fresh telemetry again and catches a hung controller.
       (If no arm needs it any more, also delete the `!pi.arm.telemetry` branch in `src/core/status.ts`.)
 
-## Where images get built (open decision)
+## Where images get built (decided 2026-11-11: on the laptop)
 
-Today: on the laptop (needs Docker Desktop/Colima), shipped as layer diffs over SSH.
-Alternative: ship source to the Pi and `docker build` there, so laptops need only ssh + git + Bun.
+Images are built on the laptop (Docker Desktop/Colima) and shipped as layer diffs over SSH.
 
-- Pro: Windows teammates skip Docker Desktop entirely.
-- Con: slower builds on a Pi 4; apt/pip need internet. The emergency scripts solved that with an
-  HTTP proxy tunnelled from a laptop (`download_proxy.py`, `HTTP_PROXY=127.0.0.1:18081` in
-  `talos-docker.service`). It's only needed when dependencies change.
-- [ ] Decide. Lotus rule: whichever has fewer moving parts for the team.
+Building on the Pi was rejected: its `apt`/`pip` steps need internet and the Pis have none. The
+emergency scripts got around that with an HTTP proxy tunnelled from a laptop (`download_proxy.py`,
+`HTTP_PROXY=127.0.0.1:18081` in `talos-docker.service`), which is one more moving part, and Pi 4
+builds are slow. The cost is that Windows teammates need Docker Desktop.
 
 ## Windows
 
@@ -224,4 +222,4 @@ Gaia), keeping the guide as the "how it works" explainer:
 
 - [ ] Operator truncates `operator.log` on every start; keep the previous run (e.g. rotate in Gaia)
       so crashes like the one above aren't lost.
-- [ ] Commit the Gaia repo (nothing is committed yet).
+- [ ] Commit the MCP server (`src/mcp.ts`, `src/core/ops.ts`, `.mcp.json`) and its README section.

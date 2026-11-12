@@ -67,6 +67,20 @@ The **Commander** card manages a Commander checkout on this machine (`commander.
 
 **The process.** commander-web runs detached, with its output in `.cache/commander/commander.log` (the previous run's in `commander.previous.log`), and Gaia tracks it through `.cache/commander/process.json`. It keeps running when Gaia restarts or stops; the next Gaia picks it up again. Stop is a Ctrl+C for its whole process group (SIGKILL after 20 s); on Windows it's `taskkill /T /F`. Gaia reads Commander's `web_host`/`web_port` from its app settings (and `COMMANDER_WEB_*` env vars) to link to it and check `/api/health`.
 
+## Agents (MCP)
+
+The running Gaia also serves an [MCP](https://modelcontextprotocol.io) server at `http://localhost:4747/mcp` (Streamable HTTP), so a coding agent can do everything the UI does: check status, start/stop/restart services, deploy (including from a working copy), read logs, grab a camera frame, troubleshoot, power off or reboot Pis, and manage Commander. Its jobs are the UI's jobs: they take the same per-Pi locks and appear in the Activity drawer as they run.
+
+Gaia must be running (`bun run dev`). To register it:
+
+```sh
+claude mcp add --scope user --transport http gaia http://localhost:4747/mcp   # Claude Code, from any directory
+```
+
+This checkout's `.mcp.json` already registers it for agents working inside `gaia/`. Other harnesses take the same URL as an HTTP / Streamable HTTP server; one that only speaks stdio can use `npx mcp-remote http://localhost:4747/mcp`.
+
+Tools that change something wait for their job (`wait_seconds`) and then re-poll the Pi, so the agent sees the result in one call. A job still running when the wait ends keeps going, and `get_job` waits for it. Homing is treated as harmless, so Start and Deploy don't ask first. The `power` tool tells agents to power off or reboot only with the user's assent, but informal or contextual assent is enough. The tools live in `src/mcp.ts`.
+
 ## Adding a Pi
 
 1. Flash Raspberry Pi OS Lite (64-bit), with SSH and your key enabled, and give it a unique hostname.
@@ -87,7 +101,7 @@ Deploy installs a small script, `~/talos-stack/bin/talos`, linked as `/usr/local
 - Starting Operator on a native-controller arm (`homesOnStart: true`) **physically homes it**, so Start, Restart, and Deploy ask for confirmation. Operator uses `restart: "no"`, so nothing restarts the arm unattended, not even a reboot.
 - MediaMTX, the camera and Pi-Vision use `restart: unless-stopped`: they restart after a crash and come up at boot, unless you stopped them.
 - One mutating job runs per Pi at a time.
-- Gaia listens on `127.0.0.1` only. It refuses other `Host` headers and requires a custom header on POSTs, so a web page can't trigger actions on your robots. `HOST=0.0.0.0 bun run dev` exposes it to your network *without authentication*; don't.
+- Gaia listens on `127.0.0.1` only. It refuses other `Host` headers and requires a custom header on POSTs, so a web page can't trigger actions on your robots. `/mcp` takes only JSON (which a cross-site page can't send without a CORS preflight Gaia never answers) and refuses foreign `Origin` headers. `HOST=0.0.0.0 bun run dev` exposes it to your network *without authentication*; don't.
 
 ## Moving from `two-pi-20261104`
 
@@ -109,6 +123,7 @@ gaia.config.yaml      fleet + sources (shared)       gaia.local.yaml   personal 
 stack/                Dockerfiles, pinned Pi-Vision deps, mediamtx.yml
 src/core/             no UI code: config, ssh, actions, jobs, status probe, build/deploy, compose generation
 src/ui/, src/server.tsx   Hono + JSX + htmx; public/ has the small client script and CSS
+src/mcp.ts            MCP server for agents (mounted at /mcp; uses the same src/core/ops.ts as the UI)
 .cache/               git mirrors, build contexts, image archives, files last uploaded to each Pi, commander/ (log, pid)
 ```
 
@@ -120,5 +135,4 @@ src/ui/, src/server.tsx   Hono + JSX + htmx; public/ has the small client script
   - Operator cross-compiles natively, and its tests run natively.
   - The Pi-Vision and Cam Streamer builds run their `apt`/`pip` steps under Docker Desktop's QEMU emulation. The first build takes a few minutes; after that it's cached, and code-only changes rebuild in seconds.
 - **No SSH connection sharing on Windows:** Windows' OpenSSH can't multiplex connections, so each status poll opens a fresh connection (about 0.5 s). It works, just with a little more overhead.
-- MediaMTX runs as a host systemd service. That's how the two-Pi setup ran it too; it was a host prerequisite there. Moving it into the stack (`bluenviron/mediamtx`) would make a fresh Pi a pure `docker compose up`, and its API would allow a cheaper stream health check.
 - Rollback is manual for now: `previous-compose.yaml` sits next to `compose.yaml` on the Pi, and the old images stay tagged.
