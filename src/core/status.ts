@@ -165,8 +165,11 @@ async function pollOnce(cfg: Config, pi: PiCfg, rtsp: boolean) {
   }
 }
 
-/** Background poll loop per Pi; `loadCfg` is re-read each cycle so config edits apply live. */
-export function startPolling(loadCfg: () => Config) {
+/**
+ * Background poll loop per Pi; `loadCfg` is re-read each cycle so config edits apply live.
+ * Returns a function that starts loops for newly added Pis right away (otherwise within 10 s).
+ */
+export function startPolling(loadCfg: () => Config): () => void {
   const running = new Set<string>();
   const ensure = () => {
     for (const pi of loadCfg().pis) {
@@ -197,6 +200,7 @@ export function startPolling(loadCfg: () => Config) {
   };
   ensure();
   setInterval(ensure, 10000);
+  return ensure;
 }
 
 /** Poll right away (RTSP check included) and resolve with the fresh state. Runs alongside the loop; probes are read-only. */

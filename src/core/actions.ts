@@ -171,7 +171,7 @@ export const ACTIONS: Action[] = [
     label: "Detect USB devices",
     scope: "troubleshoot",
     group: "Devices",
-    description: "List serial adapters and cameras with the udev ID_PATH / vendor / product values used in gaia.config.yaml.",
+    description: "List serial adapters and cameras with their udev ID_PATH / vendor / product values (More › Settings can fill these in for you).",
     steps: () => [t("List USB serial + video devices", "usb-detect")],
   },
   {

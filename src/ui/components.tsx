@@ -229,6 +229,9 @@ export function PiCard({ cfg, pi }: { cfg: Config; pi: PiCfg }) {
             <span class="sr-only">More</span>
           </summary>
           <div class="menu-list">
+            <button class="btn menu-item" hx-get={`/pis/${pi.id}/settings`} hx-target="#modal-body">
+              Settings
+            </button>
             <button class="btn menu-item" hx-get={`/pis/${pi.id}/files`} hx-target="#modal-body">
               Generated files (compose.yaml, udev rules…)
             </button>
@@ -465,7 +468,7 @@ export function SourcesPanel({ cfg }: { cfg: Config }) {
           const s = cfg.components[c].source;
           const override = localOverrideFor(c);
           return (
-            <div class="src">
+            <div class="src" data-source={c}>
               <div class="src-head">
                 <b>{COMPONENT_LABEL[c]}</b>
                 <span class={`tag ${s.mode}`}>{s.mode === "git" ? "pinned ref" : s.mode === "local" ? "working copy" : "built-in"}</span>
@@ -537,7 +540,15 @@ export function FleetPanel({ cfg }: { cfg: Config }) {
   const FLEET_ICON: Record<string, IconName> = { start: "play", stop: "stop", restart: "restart" };
   return (
     <section class="card fleet">
-      <h3>Fleet</h3>
+      <div class="card-head">
+        <h3>Fleet</h3>
+        <span class="spacer" />
+        <button class="btn small ghost" hx-get="/fleet/add" hx-target="#modal-body">
+          <Icon name="plus" />
+          Add a Pi
+        </button>
+      </div>
+      {cfg.pis.length === 0 && <p class="muted">No Pis on this computer yet.</p>}
       <div class="chips">
         {cfg.pis.map((pi) => (
           <a id={`chip-${pi.id}`} class="chip" href={`#pi-${pi.id}`} data-name={pi.name}>
@@ -545,70 +556,74 @@ export function FleetPanel({ cfg }: { cfg: Config }) {
           </a>
         ))}
       </div>
-      <form class="deploy-form group" hx-post="/deploy" hx-target="#jobs" hx-swap="afterbegin" data-homing={homing.map((p) => p.id).join(",")}>
-        <h4>Deploy</h4>
-        <div class="field">
-          <span class="field-label">To</span>
-          {cfg.pis.map((pi) => (
-            <label>
-              <input type="checkbox" name="targets" value={pi.id} checked /> {pi.name}
-            </label>
-          ))}
-        </div>
-        <div class="field">
-          <span class="field-label">Options</span>
-          <label title="Run docker compose up -d after copying. Unchecked = only stage the new images and files.">
-            <input type="checkbox" name="start" checked /> start after deploy
-          </label>
-          <label title="Rebuild even if an image with identical inputs exists">
-            <input type="checkbox" name="force" /> force rebuild
-          </label>
-        </div>
-        <div class="row">
-          <button class="btn primary" type="submit">
-            <Icon name="upload" />
-            Build &amp; deploy
-          </button>
-          <button class="btn" type="submit" name="buildOnly" value="1" title="Build the arm64 images locally without touching any Pi">
-            <Icon name="package" />
-            Build only
-          </button>
-        </div>
-      </form>
-      <div class="group">
-        <h4>All Pis</h4>
-        <div class="row wrap">
-          {["start", "stop", "restart"].map((a) => {
-            const label = `${a[0]!.toUpperCase() + a.slice(1)} all`;
-            const confirm = a !== "stop" && homing.length ? `${label}? This HOMEs: ${homing.map((p) => p.name).join(", ")}.\n\nIs every workspace clear?` : undefined;
-            return (
+      {cfg.pis.length > 0 && (
+        <>
+          <form class="deploy-form group" hx-post="/deploy" hx-target="#jobs" hx-swap="afterbegin" data-homing={homing.map((p) => p.id).join(",")}>
+            <h4>Deploy</h4>
+            <div class="field">
+              <span class="field-label">To</span>
+              {cfg.pis.map((pi) => (
+                <label>
+                  <input type="checkbox" name="targets" value={pi.id} checked /> {pi.name}
+                </label>
+              ))}
+            </div>
+            <div class="field">
+              <span class="field-label">Options</span>
+              <label title="Run docker compose up -d after copying. Unchecked = only stage the new images and files.">
+                <input type="checkbox" name="start" checked /> start after deploy
+              </label>
+              <label title="Rebuild even if an image with identical inputs exists">
+                <input type="checkbox" name="force" /> force rebuild
+              </label>
+            </div>
+            <div class="row">
+              <button class="btn primary" type="submit">
+                <Icon name="upload" />
+                Build &amp; deploy
+              </button>
+              <button class="btn" type="submit" name="buildOnly" value="1" title="Build the arm64 images locally without touching any Pi">
+                <Icon name="package" />
+                Build only
+              </button>
+            </div>
+          </form>
+          <div class="group">
+            <h4>All Pis</h4>
+            <div class="row wrap">
+              {["start", "stop", "restart"].map((a) => {
+                const label = `${a[0]!.toUpperCase() + a.slice(1)} all`;
+                const confirm = a !== "stop" && homing.length ? `${label}? This HOMEs: ${homing.map((p) => p.name).join(", ")}.\n\nIs every workspace clear?` : undefined;
+                return (
+                  <button
+                    class="btn small"
+                    hx-post={`/fleet/${a}`}
+                    hx-target="#jobs"
+                    hx-swap="afterbegin"
+                    hx-confirm={confirm}
+                    {...(confirm ? confirmAttrs(everyone, label, "home") : {})}
+                  >
+                    <Icon name={FLEET_ICON[a]!} />
+                    {label}
+                  </button>
+                );
+              })}
               <button
-                class="btn small"
-                hx-post={`/fleet/${a}`}
+                class="btn small danger"
+                hx-post="/fleet/poweroff"
                 hx-target="#jobs"
                 hx-swap="afterbegin"
-                hx-confirm={confirm}
-                {...(confirm ? confirmAttrs(everyone, label, "home") : {})}
+                hx-confirm={`End of day: stop every stack and shut down ${everyone}?\n\nUnplug only after each Pi's green LED stops flickering.`}
+                {...confirmAttrs(everyone, "Power off all", "danger")}
+                title="Stop containers, then sudo systemctl poweroff on every Pi"
               >
-                <Icon name={FLEET_ICON[a]!} />
-                {label}
+                <Icon name="power" />
+                Power off all
               </button>
-            );
-          })}
-          <button
-            class="btn small danger"
-            hx-post="/fleet/poweroff"
-            hx-target="#jobs"
-            hx-swap="afterbegin"
-            hx-confirm={`End of day: stop every stack and shut down ${everyone}?\n\nUnplug only after each Pi's green LED stops flickering.`}
-            {...confirmAttrs(everyone, "Power off all", "danger")}
-            title="Stop containers, then sudo systemctl poweroff on every Pi"
-          >
-            <Icon name="power" />
-            Power off all
-          </button>
-        </div>
-      </div>
+            </div>
+          </div>
+        </>
+      )}
     </section>
   );
 }

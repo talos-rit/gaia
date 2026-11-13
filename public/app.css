@@ -254,3 +254,108 @@ details.menu > summary { margin: 0; }
 select { font: 12.5px var(--mono); background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 5px; padding: 5px 6px; }
 .fetch-out { margin: 0; max-height: 120px; overflow: auto; font: 11.5px/1.45 var(--mono); white-space: pre-wrap; word-break: break-all; color: var(--muted); }
 .small-print { font-size: 12px; margin: 2px 0 0; }
+
+/* card header with a button (Fleet › Add a Pi) */
+.card-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.card-head h3 { margin: 0; }
+.card.empty { grid-column: 1 / -1; max-width: 560px; }
+.card.empty p { margin: 6px 0 12px; }
+
+/* settings forms (src/ui/settingsForm.tsx): Gaia settings, Pi settings. The title and the
+   buttons stay put; only the fields scroll. */
+dialog#modal:has(.settings-form) { width: min(780px, 94vw); }
+.modal-content:has(.settings-form) { padding: 0; }
+.modal-content:has(.settings-form) > header { padding: 16px 28px 14px; margin: 0; border-bottom: 1px solid var(--line); }
+.settings-form { --label-w: 150px; --col-gap: 16px; display: flex; flex-direction: column; min-height: 0; flex: 1; }
+.settings-body { overflow: auto; padding: 8px 28px 28px; display: flex; flex-direction: column; }
+/* Focused on open (not the × button), so the arrow keys scroll it. */
+.settings-body:focus { outline: none; }
+.form-buttons { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.settings-form > .form-buttons { padding: 14px 28px; border-top: 1px solid var(--line); }
+.save-note { flex: 1 1 220px; margin-left: 6px; }
+
+/* Section list beside a long form (Gaia settings). */
+dialog#modal:has(.settings-form.has-nav) { width: min(980px, 94vw); }
+.settings-main { display: flex; min-height: 0; flex: 1; }
+.settings-main > .settings-body { flex: 1; min-width: 0; }
+.settings-nav { flex: 0 0 180px; display: flex; flex-direction: column; gap: 2px; padding: 22px 12px 22px 16px; border-right: 1px solid var(--line); overflow: auto; }
+.settings-nav a { display: flex; align-items: center; gap: 8px; padding: 6px 12px; border-radius: 6px; color: var(--muted); text-decoration: none; }
+.settings-nav a:hover { color: var(--text); background: var(--panel-2); }
+.settings-nav a[aria-current] { color: var(--text); background: var(--panel-2); }
+.changed-mark.inline { position: static; flex: none; }
+
+.form-section { display: flex; flex-direction: column; gap: 16px; padding: 22px 0 4px; }
+.form-section + .form-section { border-top: 1px solid var(--line); margin-top: 18px; }
+.form-section h4 { margin: 0 0 2px; font-size: 14px; font-weight: 600; }
+.form-section > p.hint { margin: -6px 0 0; }
+details.fold > summary, details.share > summary { list-style: none; display: flex; align-items: center; gap: 8px; margin: 0; }
+details.fold > summary::-webkit-details-marker, details.share > summary::-webkit-details-marker { display: none; }
+details.fold > summary::before, details.share > summary::before { content: ""; width: 6px; height: 6px; border: solid var(--muted); border-width: 0 1.5px 1.5px 0; transform: rotate(-45deg); transition: transform 0.15s; margin: 0 2px; }
+details.fold[open] > summary::before, details.share[open] > summary::before { transform: rotate(45deg); }
+details.fold > summary h4 { margin: 0; }
+details.fold:not([open]) { padding-bottom: 0; }
+.fold-body { display: flex; flex-direction: column; gap: 16px; margin-top: 16px; }
+
+.setting { position: relative; display: grid; grid-template-columns: var(--label-w) minmax(0, 1fr); gap: var(--col-gap); align-items: baseline; }
+.setting-label { color: var(--muted); }
+.setting-input { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.control { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.control.wrap { flex-wrap: wrap; }
+.control > input, .control > select, .control > textarea, .stack > input { flex: 1; min-width: 0; width: 100%; }
+.stack { display: flex; flex-direction: column; gap: 8px; flex: 1; min-width: 0; }
+/* Short values get short boxes, so the form reads as distinct settings rather than one wall of inputs. */
+.control > .w-xs, .inline > .w-xs { flex: 0 0 9ch; width: 9ch; }
+.control > .w-s { flex: 0 1 16ch; }
+.control > .w-m { flex: 0 1 30ch; }
+.control > .w-l { flex: 0 1 38ch; }
+input.text { font: 13px system-ui, -apple-system, "Segoe UI", sans-serif; }
+.affix { color: var(--muted); white-space: nowrap; }
+.affix.mono, .affix .mono { font-size: 12px; }
+label.inline { display: inline-flex; align-items: center; gap: 6px; }
+label.inline + label.inline { margin-left: 8px; }
+.hint { color: var(--muted); font-size: 12px; }
+.hint.default { white-space: nowrap; }
+.settings-form p.hint { margin: 0; }
+label.check { display: inline-flex; align-items: center; gap: 8px; }
+.check-hint { margin-left: 21px; }
+.btn.reset { color: var(--muted); }
+.btn.reset:hover { color: var(--text); }
+/* Changed on this computer: a dot in the left margin, beside the label. */
+.changed-mark { position: absolute; left: -15px; top: 0.6em; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+.setting.invalid input, .setting.invalid textarea { border-color: var(--bad); }
+.field-error { color: var(--bad); font-size: 12px; }
+.form-errors { margin: 16px 0 0; padding: 8px 12px 8px 28px; border: 1px solid var(--bad); border-radius: 6px; background: #2a1215; }
+
+details.reveal { flex: 1; min-width: 0; }
+details.reveal > summary { width: fit-content; }
+details.reveal[open] > summary { display: none; }
+/* <details> doesn't reliably lay out as flex, so spacing is margins. */
+details.reveal[open] > * + * { display: block; margin-top: 5px; }
+details.reveal.block[open] > * + * { margin-top: 16px; }
+details.reveal.block > summary { margin-left: calc(var(--label-w) + var(--col-gap)); }
+details.reveal.block > p { margin-left: calc(var(--label-w) + var(--col-gap)) !important; }
+.form-section:has(> details.reveal[open]) > .ro { display: none; }
+
+.usb-found .cmd { margin-top: 8px; }
+.usb-found p { margin: 6px 0; }
+.usb-dev { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px; padding: 6px 0; border-top: 1px solid var(--line); }
+.settings-body > .share, .settings-body > .removed { border-top: 1px solid var(--line); margin-top: 18px; padding-top: 14px; }
+.share > summary { font-weight: 600; margin: 0; }
+.share p.hint { margin: 10px 0 8px; }
+.copyable { position: relative; }
+.copyable > button { position: absolute; top: 8px; right: 8px; }
+.copyable > pre { margin: 0; }
+.removed { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.settings-form textarea { font: 12.5px/1.45 var(--mono); background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 5px; padding: 5px 8px; width: 100%; resize: vertical; }
+.settings-form .warn-text { color: var(--warn); }
+@media (max-width: 760px) {
+  .settings-nav { display: none; }
+}
+@media (max-width: 600px) {
+  .save-note { display: none; }
+  .settings-form { --label-w: 0px; --col-gap: 0px; }
+  .setting { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+  .setting-label:empty { display: none; }
+  .settings-body, .settings-form > .form-buttons, .modal-content:has(.settings-form) > header { padding-left: 18px; padding-right: 18px; }
+  .changed-mark { left: -11px; }
+}

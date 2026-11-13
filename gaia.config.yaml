@@ -1,8 +1,8 @@
 # Gaia configuration: the shared, committed source of truth for the Talos Pi fleet.
 #
-# Personal overrides (e.g. "deploy Operator from my working copy") go in
-# gaia.local.yaml, which is git-ignored and deep-merged over this file.
-# The Sources panel in the UI writes to gaia.local.yaml for you.
+# Personal changes (e.g. "deploy Operator from my working copy", "my Pi instead of the lab's") go
+# in gaia.local.yaml: git-ignored, and a merge patch over this file (same keys; `null` removes
+# one). The UI's Sources panel and Pi settings write it for you.
 
 server:
   port: 4747
@@ -52,13 +52,19 @@ components:
     # switch ref to main once it's merged. (An older script ignores OUTPUT_FPS and publishes 30 fps.)
     source: { mode: git, repo: https://github.com/talos-rit/cam_streamer.git, ref: feat/output-fps }
 
+# The Pis Gaia manages, keyed by id. These are the RIT lab's Pis, so a new teammate gets them
+# without configuring anything. Elsewhere, remove them and add your own in the UI (a Pi's
+# More › Settings, and Fleet › Add a Pi): that writes gaia.local.yaml, never this file.
+#
+# The id names the Pi's devices (/dev/talos-<id>-serial) and its Commander robot entry. Fields
+# left out use defaults: user pi, controller native, homesOnStart true, operatorPort 61616,
+# visionPort 5051, rtspPath <id>, inferenceFps 4, encoder hardware, telemetry true.
 pis:
-  - id: bingo
+  bingo:
     name: Bingo
     host: bingo.local
     fallbackHosts: [192.168.0.3, 192.168.0.2]
     user: pi
-    runtime: system # system (default) = normal Docker install; isolated = the emergency /run/talos-docker.sock daemon
     arm:
       controller: native # ERV_CONTROLLER_PROFILE
       homesOnStart: true # starting Operator physically HOMEs the arm -> UI asks for confirmation
@@ -71,13 +77,12 @@ pis:
         serial: { idPath: "platform-fd500000.pcie-pci-0000:01:00.0-usb-0:1.[34]:1.0", vendor: "067b", product: "2303" }
         camera: { idPath: "platform-fd500000.pcie-pci-0000:01:00.0-usb-0:1.[34]:1.0" }
 
-  - id: bluey
+  bluey:
     name: Bluey
     host: bluey.local
     # bluey.local breaks when the Pi is on ethernet and Wi-Fi at once (avahi renames it bluey-2.local).
     fallbackHosts: [192.168.0.52, bluey-2.local, 192.168.0.54]
     user: pi
-    runtime: system
     arm:
       controller: esp-one-axis
       homesOnStart: false

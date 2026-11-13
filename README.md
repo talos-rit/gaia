@@ -47,7 +47,7 @@ The **Sources** panel (or `gaia.config.yaml` › `components`) picks where each 
 | Working copy | `{ mode: local, path: ../operator }` | Your checkout as it is now: tracked and untracked files, minus `.gitignore`'d ones. The image is tagged `g<sha>-dirty-<contenthash>`. |
 | Built-in | `{ mode: builtin }` | Only `stack/<component>.Dockerfile` (Cam Streamer is plain Debian ffmpeg). |
 
-Changes made in the UI go to **`gaia.local.yaml`**, which is git-ignored and deep-merged over the shared `gaia.config.yaml`. Each person can deploy their own working copy without editing the team's config.
+Changes made in the UI go to **`gaia.local.yaml`**, which is git-ignored and applied over the shared `gaia.config.yaml` (see [Configuration](#configuration)). Each person can deploy their own working copy without editing the team's config.
 
 Builds are cached by their inputs: commit or content hash, Dockerfile, and build args. Deploying the same thing twice rebuilds nothing. Transfers skip any image the Pi already has. For a new image they send **only the layers the Pi is missing**, so a one-line Pi-Vision change ships a few KB instead of ~580 MB. Each Pi records what was deployed in `~/talos-stack/gaia-manifest.json` (source, revision, dirty flag, who deployed it and when), and the card shows it. A card warns when a running container doesn't match the deployed image.
 
@@ -81,14 +81,40 @@ This checkout's `.mcp.json` already registers it for agents working inside `gaia
 
 Tools that change something wait for their job (`wait_seconds`) and then re-poll the Pi, so the agent sees the result in one call. A job still running when the wait ends keeps going, and `get_job` waits for it. Homing is treated as harmless, so Start and Deploy don't ask first. The `power` tool tells agents to power off or reboot only with the user's assent, but informal or contextual assent is enough. The tools live in `src/mcp.ts`.
 
+## Configuration
+
+Gaia reads two files:
+
+- **`gaia.config.yaml`** (committed): the team's defaults. That's the component sources and the RIT lab's Pis (Bingo and Bluey), so a teammate who clones Gaia has a working setup without configuring anything.
+- **`gaia.local.yaml`** (git-ignored): this computer's changes, as a [JSON Merge Patch](https://www.rfc-editor.org/rfc/rfc7386) over the shared file. It uses the same keys, objects merge field by field, lists are replaced, and `null` removes a key. You rarely edit it by hand, because the UI writes it:
+  - **Sources** panel: where each image is built from.
+  - A Pi's **More › Settings** and **Fleet › Add a Pi**: the Pis.
+  - **Settings** in the header: everything else (Commander's checkout, each component's build options such as Pi-Vision's model and environment and its Docker build arguments, the stack's folder and compose project on the Pis, and Gaia's port).
+
+  A blue dot marks each field this computer changes; its reset button puts `gaia.config.yaml`'s value back (Save to keep it). A Pi's settings also have **Reset to shared** for the whole Pi.
+
+```yaml
+# gaia.local.yaml: Bluey on a different network, Bingo hidden, plus a Pi of my own
+pis:
+  bluey: { fallbackHosts: [10.0.0.42] }
+  bingo: null
+  shelf-pi: { name: Shelf Pi, host: shelf.local, arm: { controller: esp-one-axis, homesOnStart: false } }
+```
+
+Pis are keyed by id. The id names the Pi's devices (`/dev/talos-<id>-serial`) and its robot entry in Commander, so it can't be changed once set. A Pi entry only needs `host`; the other fields have defaults (listed at the top of `pis:` in `gaia.config.yaml`).
+
+**Not in the RIT lab?** Open each lab Pi's **More › Settings** and choose **Remove from Gaia**, then add your own. This only writes `bingo: null` and `bluey: null` to your `gaia.local.yaml`, so pulling new versions of Gaia never conflicts. Removed Pis can be restored from **Fleet › Add a Pi**.
+
 ## Adding a Pi
 
 1. Flash Raspberry Pi OS Lite (64-bit), with SSH and your key enabled, and give it a unique hostname.
-2. Add an entry under `pis:` in `gaia.config.yaml`.
+2. **Fleet › Add a Pi**: name, host, SSH user and the arm's controller. **Detect USB devices** in the same form lists the Pi's serial adapters and cameras; **Use as serial adapter** / **Use as camera** fills in the USB fields. The Pi is saved to `gaia.local.yaml` (on this computer only).
 3. **Troubleshoot › Install Docker.**
 4. If the SD card was copied from another Pi, run **Troubleshoot › Give this Pi its own identity** (Gaia warns when two Pis share a machine-id). Cloned Pis generate the same IPv6 addresses, and avahi then renames one of them to `<name>-2.local`.
-5. **Troubleshoot › Detect USB devices** shows the `ID_PATH` / vendor / product values for `usb:`. Then **Re-apply USB rules** creates `/dev/talos-<id>-serial` and `/dev/talos-<id>-camera`.
+5. **Troubleshoot › Re-apply USB rules** creates `/dev/talos-<id>-serial` and `/dev/talos-<id>-camera`.
 6. **Deploy.**
+
+To give the whole team a Pi (or a change to a lab Pi), copy the YAML at the bottom of its **More › Settings** into `gaia.config.yaml`, commit it, then use **Reset to shared** so your local copy doesn't shadow later changes.
 
 When `<name>.local` doesn't resolve, Gaia also tries `fallbackHosts` and the IP addresses it last saw the Pi on (`.cache/addresses.json`, only used if the same hostname answers). Every address is checked against the host key recorded for `host`.
 
@@ -119,7 +145,7 @@ The resource caps, SIGINT shutdown, host networking and `/dev/video11` passthrou
 ## Layout
 
 ```
-gaia.config.yaml      fleet + sources (shared)       gaia.local.yaml   personal overrides (ignored)
+gaia.config.yaml      lab fleet + sources (shared)   gaia.local.yaml   this computer's changes (ignored)
 stack/                Dockerfiles, pinned Pi-Vision deps, mediamtx.yml
 src/core/             no UI code: config, ssh, actions, jobs, status probe, build/deploy, compose generation
 src/ui/, src/server.tsx   Hono + JSX + htmx; public/ has the small client script and CSS

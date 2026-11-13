@@ -92,24 +92,36 @@ export interface Config {
 type Obj = Record<string, unknown>;
 const isObj = (v: unknown): v is Obj => typeof v === "object" && v !== null && !Array.isArray(v);
 
-/** Deep merge; arrays are replaced, except `pis`, which is merged by `id`. */
+/**
+ * gaia.local.yaml is a JSON Merge Patch (RFC 7386) over gaia.config.yaml: objects merge key by
+ * key, anything else (arrays included) is replaced, and `null` removes a key. So a local file
+ * can add a Pi, change one field of a shared Pi, or remove a shared Pi (`pis: { bingo: null }`)
+ * without copying or editing the team's file. A component `source` is replaced wholesale, never
+ * mixed (a git repo with a local path makes no sense).
+ */
 function merge(base: unknown, over: unknown, key = ""): unknown {
-  if (key === "pis" && Array.isArray(base) && Array.isArray(over)) {
-    const out = base.map((p) => ({ ...(p as Obj) }));
-    for (const o of over as Obj[]) {
-      const i = out.findIndex((p) => p.id === o.id);
-      if (i >= 0) out[i] = merge(out[i], o) as Obj;
-      else out.push(o);
-    }
-    return out;
+  if (over === undefined) return base;
+  if (key === "source" || !isObj(base) || !isObj(over)) return over;
+  const out: Obj = { ...base };
+  for (const [k, v] of Object.entries(over)) {
+    if (v === null) delete out[k];
+    else out[k] = merge(base[k], v, k);
   }
-  if (key === "source") return over ?? base; // a source is replaced wholesale, never mixed
-  if (isObj(base) && isObj(over)) {
-    const out: Obj = { ...base };
-    for (const [k, v] of Object.entries(over)) out[k] = k in base ? merge(base[k], v, k) : v;
-    return out;
+  return out;
+}
+
+/** The merge patch that turns `base` into `target` (the inverse of `merge`). Empty = identical. */
+function diff(base: Obj, target: Obj): Obj {
+  const out: Obj = {};
+  for (const k of Object.keys(base)) if (!(k in target)) out[k] = null;
+  for (const [k, v] of Object.entries(target)) {
+    const b = base[k];
+    if (isObj(b) && isObj(v) && k !== "source") {
+      const d = diff(b, v);
+      if (Object.keys(d).length) out[k] = d;
+    } else if (JSON.stringify(b) !== JSON.stringify(v)) out[k] = v;
   }
-  return over === undefined ? base : over;
+  return out;
 }
 
 function readYaml(path: string): Obj {
@@ -128,6 +140,56 @@ function validateSource(name: string, s: unknown, problems: string[]) {
     problems.push(`components.${name}.source.mode must be git, local or builtin`);
 }
 
+export const PI_ID = /^[a-z0-9][a-z0-9-]*$/;
+
+/** Defaults for everything outside `pis:` that the config may leave out (also the settings form's placeholders). */
+export const DEFAULTS = {
+  port: 4747,
+  stackDir: "talos-stack",
+  stackProject: "talos",
+  commanderPath: "../commander",
+  commanderRepo: "https://github.com/talos-rit/commander.git",
+  commanderBranch: "main",
+  visionAppDir: ".",
+  visionModel: "yolo11n-pose-320.onnx",
+  mediamtxVersion: "1.15.3",
+} as const;
+
+/** Defaults for the arm fields a Pi entry may leave out (also the Pi settings form's placeholders). */
+export const ARM_DEFAULTS = {
+  controller: "native",
+  operatorPort: 61616,
+  visionPort: 5051,
+  inferenceFps: 4,
+  encoder: "hardware",
+} as const;
+
+export function piFromEntry(id: string, p: Obj): PiCfg {
+  const arm = (isObj(p.arm) ? p.arm : {}) as Obj;
+  return {
+    id,
+    name: String(p.name ?? id),
+    host: String(p.host ?? ""),
+    fallbackHosts: ((p.fallbackHosts as string[]) ?? []).map(String),
+    user: String(p.user ?? "pi"),
+    // system = a normal Docker install (what Troubleshoot > Install Docker sets up).
+    runtime: p.runtime === "isolated" ? "isolated" : "system",
+    runtimeDir: String(p.runtimeDir ?? "/opt/talos-docker/29.8.2"),
+    arm: {
+      controller: String(arm.controller ?? ARM_DEFAULTS.controller),
+      // Unset means "homes": the cautious reading, since Gaia then asks before starting Operator.
+      homesOnStart: arm.homesOnStart !== false,
+      operatorPort: Number(arm.operatorPort ?? ARM_DEFAULTS.operatorPort),
+      visionPort: Number(arm.visionPort ?? ARM_DEFAULTS.visionPort),
+      rtspPath: String(arm.rtspPath ?? id),
+      inferenceFps: Number(arm.inferenceFps ?? ARM_DEFAULTS.inferenceFps),
+      encoder: arm.encoder === "software" ? "software" : "hardware",
+      telemetry: arm.telemetry !== false,
+      usb: arm.usb as ArmCfg["usb"],
+    },
+  };
+}
+
 export function loadConfig(): Config {
   const problems: string[] = [];
   let raw: Obj = {};
@@ -138,58 +200,34 @@ export function loadConfig(): Config {
   }
   const comps = (raw.components ?? {}) as Obj;
   // MediaMTX is built entirely by Gaia (stack/mediamtx.Dockerfile); no config needed.
-  comps.mediamtx = { source: { mode: "builtin" }, version: "1.15.3", ...((comps.mediamtx as Obj) ?? {}) };
+  comps.mediamtx = { source: { mode: "builtin" }, version: DEFAULTS.mediamtxVersion, ...((comps.mediamtx as Obj) ?? {}) };
   for (const c of COMPONENTS) validateSource(c, (comps[c] as Obj | undefined)?.source, problems);
 
+  if (Array.isArray(raw.pis)) problems.push("pis must be a map keyed by Pi id (pis: { bingo: { host: …, arm: … } }), not a list");
   const pis: PiCfg[] = [];
-  const seen = new Set<string>();
-  for (const [i, p] of ((raw.pis as Obj[]) ?? []).entries()) {
-    const arm = (p.arm ?? {}) as Obj;
-    const id = String(p.id ?? `pi${i}`);
-    if (!/^[a-z0-9-]+$/.test(id)) problems.push(`pis[${i}].id "${id}" must be lowercase letters, digits or dashes`);
-    if (seen.has(id)) problems.push(`duplicate Pi id "${id}"`);
-    seen.add(id);
-    if (!p.host) problems.push(`pis.${id}.host is required`);
-    for (const k of ["operatorPort", "visionPort"]) if (typeof arm[k] !== "number") problems.push(`pis.${id}.arm.${k} must be a number`);
-    pis.push({
-      id,
-      name: String(p.name ?? id),
-      host: String(p.host ?? ""),
-      fallbackHosts: ((p.fallbackHosts as string[]) ?? []).map(String),
-      user: String(p.user ?? "pi"),
-      // system = a normal Docker install (what Troubleshoot > Install Docker sets up).
-      runtime: p.runtime === "isolated" ? "isolated" : "system",
-      runtimeDir: String(p.runtimeDir ?? "/opt/talos-docker/29.8.2"),
-      arm: {
-        controller: String(arm.controller ?? "native"),
-        homesOnStart: arm.homesOnStart !== false,
-        operatorPort: Number(arm.operatorPort ?? 61616),
-        visionPort: Number(arm.visionPort ?? 5051),
-        rtspPath: String(arm.rtspPath ?? id),
-        inferenceFps: Number(arm.inferenceFps ?? 2),
-        encoder: arm.encoder === "software" ? "software" : "hardware",
-        telemetry: arm.telemetry !== false,
-        usb: arm.usb as ArmCfg["usb"],
-      },
-    });
+  for (const [id, entry] of Object.entries(isObj(raw.pis) ? raw.pis : {})) {
+    if (!isObj(entry)) continue;
+    if (!PI_ID.test(id)) problems.push(`Pi id "${id}" must be lowercase letters, digits or dashes`);
+    if (!entry.host) problems.push(`pis.${id}.host is required`);
+    pis.push(piFromEntry(id, entry));
   }
   const stack = (raw.stack ?? {}) as Obj;
   const vision = (comps.vision ?? {}) as Obj;
   const cmd = (raw.commander ?? {}) as Obj;
-  const cmdPath = String(cmd.path ?? "../commander");
+  const cmdPath = String(cmd.path ?? DEFAULTS.commanderPath);
   return {
     commander: {
       path: cmdPath,
       dir: resolve(ROOT, cmdPath),
-      repo: String(cmd.repo ?? "https://github.com/talos-rit/commander.git"),
-      branch: String(cmd.branch ?? "main"),
+      repo: String(cmd.repo ?? DEFAULTS.commanderRepo),
+      branch: String(cmd.branch ?? DEFAULTS.commanderBranch),
     },
-    server: { port: Number(process.env.PORT ?? (raw.server as Obj | undefined)?.port ?? 4747) },
-    stack: { dir: String(stack.dir ?? "talos-stack"), project: String(stack.project ?? "talos") },
+    server: { port: Number(process.env.PORT ?? (raw.server as Obj | undefined)?.port ?? DEFAULTS.port) },
+    stack: { dir: String(stack.dir ?? DEFAULTS.stackDir), project: String(stack.project ?? DEFAULTS.stackProject) },
     components: {
       operator: { runTests: true, ...(comps.operator as Obj) } as unknown as OperatorCfg,
       camera: { ...(comps.camera as Obj) } as unknown as CameraCfg,
-      vision: { appDir: ".", model: "model.onnx", extraArgs: [], env: {}, ...vision } as unknown as VisionCfg,
+      vision: { appDir: DEFAULTS.visionAppDir, model: DEFAULTS.visionModel, extraArgs: [], env: {}, ...vision } as unknown as VisionCfg,
       mediamtx: { ...(comps.mediamtx as Obj) } as unknown as MediamtxCfg,
     },
     pis,
@@ -198,8 +236,14 @@ export function loadConfig(): Config {
 }
 
 const LOCAL_HEADER =
-  "# Personal Gaia overrides (git-ignored). Deep-merged over gaia.config.yaml.\n" +
+  "# Personal Gaia overrides (git-ignored): a merge patch over gaia.config.yaml (null removes a key).\n" +
   "# Written by the Gaia UI (or its MCP server); safe to hand-edit.\n";
+
+function writeLocal(local: Obj) {
+  if (isObj(local.pis) && Object.keys(local.pis).length === 0) delete local.pis;
+  if (isObj(local.components) && Object.keys(local.components).length === 0) delete local.components;
+  writeFileSync(LOCAL_CONFIG_FILE, LOCAL_HEADER + (Object.keys(local).length ? Bun.YAML.stringify(local, null, 2) + "\n" : ""));
+}
 
 /** Persist a component source override to gaia.local.yaml (other local settings are preserved). */
 export function saveLocalSource(component: ComponentId, source: Source, extra: Obj = {}) {
@@ -207,7 +251,137 @@ export function saveLocalSource(component: ComponentId, source: Source, extra: O
   const comps = (local.components ?? {}) as Obj;
   comps[component] = { ...((comps[component] as Obj) ?? {}), ...extra, source };
   local.components = comps;
-  writeFileSync(LOCAL_CONFIG_FILE, LOCAL_HEADER + Bun.YAML.stringify(local, null, 2) + "\n");
+  writeLocal(local);
+}
+
+// ---- Editing config from the UI ----------------------------------------------------------------
+// The settings forms edit one section at a time (a Pi, Commander, a component's build options…).
+// Saving writes gaia.local.yaml as a merge patch: only the fields that differ from the shared
+// gaia.config.yaml, so later changes to the team's file still reach this computer.
+
+const at = (o: unknown, path: string[]): unknown => path.reduce<unknown>((v, k) => (isObj(v) ? v[k] : undefined), o);
+
+/** Set (or with `undefined`, delete) the value at `path` in gaia.local.yaml, pruning emptied parents. */
+function setLocal(path: string[], value: unknown) {
+  const local = readYaml(LOCAL_CONFIG_FILE);
+  const chain: Obj[] = [local];
+  for (const k of path.slice(0, -1)) {
+    const o = chain.at(-1)!;
+    if (!isObj(o[k])) o[k] = {};
+    chain.push(o[k] as Obj);
+  }
+  const last = path.at(-1)!;
+  if (value === undefined) delete chain.at(-1)![last];
+  else chain.at(-1)![last] = value;
+  for (let i = path.length; i > 0; i--) {
+    const v = chain[i - 1]![path[i - 1]!];
+    if (isObj(v) && Object.keys(v).length === 0) delete chain[i - 1]![path[i - 1]!];
+  }
+  writeLocal(local);
+}
+
+// Shown and compared as one value (the merge still goes field by field for env/buildArgs).
+const ATOMIC = new Set(["usb", "source", "env", "buildArgs"]);
+const paths = (o: Obj, prefix = ""): string[] =>
+  Object.entries(o).flatMap(([k, v]) => (isObj(v) && !ATOMIC.has(k) ? paths(v, `${prefix}${k}.`) : [`${prefix}${k}`]));
+
+/** A settings form's validation error. `field` is the input's name, so the form can show it there. */
+export interface FormError {
+  field?: string;
+  message: string;
+}
+
+export interface SectionInfo {
+  /** The section as written (shared + local patch), before defaults are filled in. */
+  value: Obj;
+  /** The section in gaia.config.yaml, if it has one. */
+  shared: Obj | undefined;
+  /** gaia.local.yaml removes it (`null`). */
+  removed: boolean;
+  /** Fields this computer changes, as dotted paths relative to the section ("arm.operatorPort"). */
+  changed: string[];
+}
+
+export function section(path: string[]): SectionInfo {
+  const shared = at(readYaml(CONFIG_FILE), path);
+  const patch = at(readYaml(LOCAL_CONFIG_FILE), path);
+  const s = isObj(shared) ? shared : undefined;
+  if (patch === null) return { value: {}, shared: s, removed: true, changed: [] };
+  const value = (s ? merge(s, patch) : isObj(patch) ? patch : {}) as Obj;
+  return { value, shared: s, removed: false, changed: s && isObj(patch) ? paths(diff(s, value)) : [] };
+}
+
+/**
+ * Save a section's full value; gaia.local.yaml keeps only what differs from gaia.config.yaml.
+ * `keep` names fields another form owns (a component's `source`): their local value stays as
+ * written, even when it happens to equal the shared one.
+ */
+export function saveSection(path: string[], value: Obj, keep: string[] = []) {
+  const shared = at(readYaml(CONFIG_FILE), path);
+  const prev = at(readYaml(LOCAL_CONFIG_FILE), path);
+  const omit = (o: Obj) => Object.fromEntries(Object.entries(o).filter(([k]) => !keep.includes(k)));
+  const kept = isObj(prev) ? Object.fromEntries(Object.entries(prev).filter(([k]) => keep.includes(k))) : {};
+  const patch = { ...(isObj(shared) ? diff(omit(shared), omit(value)) : omit(value)), ...kept };
+  setLocal(path, Object.keys(patch).length ? patch : undefined);
+}
+
+/** Drop this computer's changes to a section (for a removed shared Pi: restore it). */
+export function resetSection(path: string[]) {
+  setLocal(path, undefined);
+}
+
+// ---- Pi entries (src/ui/piSettings.tsx) -----------------------------------------------------------
+// Shared Pis live in gaia.config.yaml (the lab's fleet, so a new teammate gets it for free).
+
+const piMap = (file: string): Obj => {
+  const p = readYaml(file).pis;
+  return isObj(p) ? p : {};
+};
+
+export type PiOrigin = "shared" | "local";
+
+export interface PiEntryInfo {
+  /** The Pi's entry as written (shared + local patch), before defaults are filled in. */
+  entry: Obj;
+  /** The entry in gaia.config.yaml (shared Pis only): what a field's reset button goes back to. */
+  shared: Obj | undefined;
+  origin: PiOrigin;
+  /** Shared Pi with local changes: the changed fields as dotted paths (e.g. "arm.operatorPort"). */
+  changed: string[];
+}
+
+export function piEntry(id: string): PiEntryInfo | undefined {
+  const s = section(["pis", id]);
+  if (s.removed || (!s.shared && Object.keys(s.value).length === 0)) return undefined;
+  return { entry: s.value, shared: s.shared, origin: s.shared ? "shared" : "local", changed: s.changed };
+}
+
+export const savePiEntry = (id: string, entry: Obj) => saveSection(["pis", id], entry);
+
+/** Remove a Pi from this computer: a shared one is hidden with `null`, a local one is deleted. */
+export function removePi(id: string) {
+  setLocal(["pis", id], id in piMap(CONFIG_FILE) ? null : undefined);
+}
+
+/** Drop this computer's changes to a shared Pi (or un-remove it). */
+export const resetPi = (id: string) => resetSection(["pis", id]);
+
+/** Shared Pis this computer has removed, for "Restore". */
+export function removedSharedPis(): { id: string; name: string }[] {
+  const shared = piMap(CONFIG_FILE);
+  return Object.entries(piMap(LOCAL_CONFIG_FILE))
+    .filter(([id, v]) => v === null && isObj(shared[id]))
+    .map(([id]) => ({ id, name: String((shared[id] as Obj).name ?? id) }));
+}
+
+/** Is `id` taken by a shared or local Pi (including a removed shared one)? */
+export function piIdTaken(id: string): boolean {
+  return id in piMap(CONFIG_FILE) || id in piMap(LOCAL_CONFIG_FILE);
+}
+
+/** YAML for one Pi entry, as it would appear under `pis:` (for "share with the team"). */
+export function piYaml(id: string, entry: Obj): string {
+  return Bun.YAML.stringify({ pis: { [id]: entry } }, null, 2) + "\n";
 }
 
 /** Remove a component override so the shared gaia.config.yaml default applies again. */
@@ -217,7 +391,7 @@ export function clearLocalSource(component: ComponentId) {
   if (isObj(comps[component])) delete (comps[component] as Obj).source;
   if (isObj(comps[component]) && Object.keys(comps[component] as Obj).length === 0) delete comps[component];
   local.components = comps;
-  writeFileSync(LOCAL_CONFIG_FILE, LOCAL_HEADER + Bun.YAML.stringify(local, null, 2) + "\n");
+  writeLocal(local);
 }
 
 export function localOverrideFor(component: ComponentId): boolean {

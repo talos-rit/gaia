@@ -41,11 +41,137 @@ document.addEventListener("click", (e) => {
     if (drawer().classList.contains("open")) unseenFailure = false;
     setActivity($("#activity-status")?.className ?? "muted", $("#activity-status")?.textContent ?? "");
   }
-  if (e.target.closest("[data-close-modal]")) $("#modal").close();
+  if (e.target.closest("[data-close-modal]")) closeModal();
   // Close dropdown menus when clicking elsewhere or after choosing an item.
   for (const d of $$("details.menu[open]")) {
     if (!d.contains(e.target) || e.target.closest(".menu-item")) d.open = false;
   }
+});
+
+// ---- settings forms (src/ui/settingsForm.tsx) ---------------------------------------------
+// [data-fill] buttons put values into the form: a detected USB device's "Use as …", and a changed
+// field's reset button (gaia.config.yaml's value; Save then writes it like any other edit).
+document.addEventListener("click", (e) => {
+  const btn = e.target.closest?.("[data-fill]");
+  const form = btn?.closest("form");
+  if (!form) return;
+  for (const [name, value] of Object.entries(JSON.parse(btn.dataset.fill))) {
+    const input = form.elements.namedItem(name);
+    if (!input) continue;
+    if (input.type === "checkbox") input.checked = !!value;
+    else input.value = value;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  }
+  if (btn.hasAttribute("data-reset")) {
+    const row = btn.closest(".setting");
+    row?.classList.remove("changed");
+    $(".changed-mark", row)?.remove();
+    btn.remove();
+  }
+});
+
+// Unsaved edits: closing the modal (Cancel, ×, Esc), or leaving it for another form or the
+// Sources panel, asks first. A form that came back with errors counts as edited (data-dirty).
+const snapshot = (form) => JSON.stringify([...new FormData(form)].filter(([k]) => k !== "applyUsb"));
+const settingsForm = () => $("#modal[open] form.settings-form");
+function isDirty() {
+  const form = settingsForm();
+  return !!form && (form.dataset.dirty === "1" || snapshot(form) !== form.dataset.initial);
+}
+const askDiscard = () =>
+  isDirty() ? askConfirm({ message: "Your changes haven't been saved.", action: "Discard changes", tone: "danger" }) : Promise.resolve(true);
+function closeModal() {
+  askDiscard().then((yes) => yes && $("#modal").close());
+}
+$("#modal")?.addEventListener("cancel", (e) => {
+  if (!isDirty()) return;
+  e.preventDefault();
+  closeModal();
+});
+
+// Source › Change: close the settings and open that component's Change form in the Sources panel.
+document.addEventListener("click", (e) => {
+  const btn = e.target.closest?.("[data-open-source]");
+  if (!btn) return;
+  askDiscard().then((yes) => {
+    if (!yes) return;
+    $("#modal").close();
+    const menu = $(`.src[data-source="${btn.dataset.openSource}"] details.menu`);
+    if (!menu) return;
+    // Not smooth: the menu measures where it has room as it opens, so it has to be in place first.
+    menu.scrollIntoView({ block: "center" });
+    menu.open = true;
+    $("input:checked, input", menu)?.focus({ preventScroll: true });
+  });
+});
+
+document.addEventListener("click", (e) => {
+  const btn = e.target.closest?.("[data-copy]");
+  const src = btn && $(btn.dataset.copy);
+  if (!src) return;
+  navigator.clipboard.writeText(src.textContent).then(() => {
+    const label = [...btn.childNodes].find((n) => n.nodeType === Node.TEXT_NODE && n.textContent.trim());
+    if (!label) return;
+    label.textContent = "Copied";
+    setTimeout(() => (label.textContent = "Copy"), 1500);
+  });
+});
+
+// Section list (Gaia settings): jump to a section, and mark the one being read.
+document.addEventListener("click", (e) => {
+  const link = e.target.closest?.("[data-nav]");
+  if (!link) return;
+  e.preventDefault();
+  const body = $(".settings-body", link.closest("form"));
+  const section = $(`#${link.dataset.nav}`, body);
+  // +1: past the section's top border, so the line above the heading doesn't sit against the edge.
+  if (section) body.scrollTo({ top: section.offsetTop - body.offsetTop + 1 });
+});
+document.addEventListener(
+  "scroll",
+  (e) => {
+    const body = e.target;
+    if (!(body instanceof HTMLElement) || !body.classList.contains("settings-body")) return;
+    const links = $$("[data-nav]", body.closest("form"));
+    if (!links.length) return;
+    const atEnd = body.scrollTop + body.clientHeight >= body.scrollHeight - 4;
+    let current = links[0];
+    for (const l of links) {
+      const s = $(`#${l.dataset.nav}`, body);
+      if (s && s.offsetTop - body.offsetTop - body.scrollTop <= 48) current = l;
+    }
+    if (atEnd) current = links[links.length - 1];
+    for (const l of links) l.toggleAttribute("aria-current", l === current);
+  },
+  true,
+);
+
+// Cmd/Ctrl+Enter saves.
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Enter" || !(e.metaKey || e.ctrlKey)) return;
+  const form = e.target.closest?.("form.settings-form");
+  if (form) {
+    e.preventDefault();
+    form.requestSubmit();
+  }
+});
+
+// Pi settings: changing a USB field ticks "Re-apply USB rules after saving".
+document.addEventListener("input", (e) => {
+  const t = e.target;
+  if (!t.name?.startsWith("usb.")) return;
+  const apply = t.form?.elements.namedItem("applyUsb");
+  if (apply) apply.checked = true;
+});
+
+// Pi settings (adding): the ID follows the name ("Bingo 2" → bingo-2) until you edit it yourself.
+const slug = (s) => s.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+document.addEventListener("input", (e) => {
+  const t = e.target;
+  if (t.matches?.("[data-slug-target]")) t.dataset.edited = t.value ? "1" : "";
+  if (!t.matches?.("[data-slug-source]")) return;
+  const id = $("[data-slug-target]", t.form);
+  if (id && !id.dataset.edited) id.value = slug(t.value);
 });
 
 // A form inside a dropdown (Commander's branch switch) starts a job: close the dropdown.
@@ -227,6 +353,17 @@ document.addEventListener("htmx:afterSwap", (e) => {
     if (!m.open) m.showModal();
     const pre = $("pre[data-logsrc]", t);
     if (pre) attachLogs(pre);
+    const form = $("form.settings-form", t);
+    if (form) {
+      form.dataset.initial = snapshot(form);
+      // Came back with errors: show the first field that needs fixing.
+      const bad = $(".setting.invalid", form);
+      if (bad) {
+        bad.closest("details")?.setAttribute("open", "");
+        bad.scrollIntoView({ block: "center" });
+        $("input, textarea, select", bad)?.focus({ preventScroll: true });
+      } else ($("[autofocus]", form) ?? $(".settings-body", form))?.focus();
+    }
   }
 });
 
@@ -260,6 +397,12 @@ function askConfirm({ message, subject, action, tone }) {
 
 document.addEventListener("htmx:confirm", (e) => {
   const elt = e.detail.elt;
+  // Leaving a settings form for another one (Gaia settings › a Pi): ask about unsaved edits.
+  if (elt.closest?.("#modal") && elt.hasAttribute?.("hx-get") && e.detail.target?.id === "modal-body" && isDirty()) {
+    e.preventDefault();
+    askDiscard().then((yes) => yes && e.detail.issueRequest(true));
+    return;
+  }
   let message = e.detail.question;
   let data = (elt.closest?.("[data-confirm-action]") ?? elt).dataset ?? {};
   // Deploy form: only ask about homing when "start after deploy" is on and a homing arm is targeted.

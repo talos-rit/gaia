@@ -1,4 +1,4 @@
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { streamSSE } from "hono/streaming";
 import { resolve } from "node:path";
 import { proc } from "./core/pipeline.ts";
@@ -9,7 +9,11 @@ import {
   clearLocalSource,
   getPi,
   loadConfig,
+  piEntry,
+  removePi,
+  resetPi,
   saveLocalSource,
+  savePiEntry,
   type ComponentId,
   type Config,
   type PiCfg,
@@ -35,10 +39,14 @@ import {
 } from "./core/commander.ts";
 import { knownAddress, readLines, runArgv, sq, sshDisplay, sshOpts, target } from "./core/ssh.ts";
 import { rtspUrl, type Images } from "./core/stack.ts";
+import { detectUsb, draftPi, entryFromForm } from "./core/piSetup.ts";
+import { saveSections, sectionsFromForm } from "./core/gaiaSettings.ts";
 import { getState, probeCommand, PROBE_PATH, refreshSoon, startPolling } from "./core/status.ts";
 import { ErrorNote, FleetPanel, JobView, Layout, Modal, PiCard, PiStatus, SourcesPanel } from "./ui/components.tsx";
 import { BranchForm, CommanderCard, CommanderStatusView } from "./ui/commander.tsx";
 import { Icon } from "./ui/icons.tsx";
+import { PiSettings, UsbFound } from "./ui/piSettings.tsx";
+import { GaiaSettings } from "./ui/gaiaSettings.tsx";
 
 const app = new Hono();
 const cfgNow = () => loadConfig();
@@ -81,6 +89,10 @@ app.get("/", async (c) => {
         </h1>
         <span class="spacer" />
         <span id="local-docker" hx-get="/local/status" hx-trigger="load, every 15s" hx-swap="innerHTML" />
+        <button class="btn ghost" hx-get="/settings" hx-target="#modal-body" title="Gaia settings: Commander, builds, the stack on the Pis">
+          <Icon name="settings" />
+          Settings
+        </button>
       </header>
       {cfg.problems.length > 0 && (
         <div class="banner bad">
@@ -102,6 +114,19 @@ app.get("/", async (c) => {
           {cfg.pis.map((pi) => (
             <PiCard cfg={cfg} pi={pi} />
           ))}
+          {cfg.pis.length === 0 && (
+            <section class="card empty">
+              <h2>No Pis yet</h2>
+              <p class="muted">
+                Add a Raspberry Pi running Raspberry Pi OS that you can reach with <span class="mono">ssh</span> without a password. Gaia can install Docker on it
+                for you, then deploy the stack.
+              </p>
+              <button class="btn primary" hx-get="/fleet/add" hx-target="#modal-body">
+                <Icon name="plus" />
+                Add a Pi
+              </button>
+            </section>
+          )}
         </div>
       </main>
       <aside id="drawer" class="drawer">
@@ -183,6 +208,87 @@ app.post("/local/colima-start", (c) => {
   return c.html(<JobView job={job} />);
 });
 
+// ---- Pi settings (src/ui/piSettings.tsx) ---------------------------------------------------
+// Saving reloads the page: the Fleet panel, the deploy targets and the cards all list the Pis.
+
+const reload = (c: Context) => {
+  c.header("HX-Refresh", "true");
+  return c.body(null);
+};
+
+// The Gaia settings page (src/ui/gaiaSettings.tsx): everything outside `pis:` and the sources.
+app.get("/settings", (c) => c.html(<GaiaSettings cfg={cfgNow()} />));
+
+app.post("/settings", async (c) => {
+  const body = await c.req.parseBody();
+  const { values, errors } = sectionsFromForm(body);
+  if (errors.length) return c.html(<GaiaSettings cfg={cfgNow()} shown={Object.fromEntries(values)} raw={body} errors={errors} />);
+  saveSections(values);
+  return reload(c);
+});
+
+app.get("/fleet/add", (c) => c.html(<PiSettings entry={{}} />));
+
+app.post("/fleet/add", async (c) => {
+  const body = await c.req.parseBody();
+  const r = entryFromForm(body, undefined);
+  if (r.errors.length) return c.html(<PiSettings entry={r.entry} errors={r.errors} newId={String(body.id ?? "")} raw={body} />);
+  savePiEntry(r.id, r.entry);
+  kickPolling();
+  return reload(c);
+});
+
+app.get("/pis/:id/settings", (c) => {
+  const id = c.req.param("id");
+  const info = piEntry(id);
+  if (!info) return c.text("unknown pi", 404);
+  return c.html(<PiSettings id={id} info={info} entry={info.entry} />);
+});
+
+app.post("/pis/:id/settings", async (c) => {
+  const id = c.req.param("id");
+  const info = piEntry(id);
+  if (!info) return c.text("unknown pi", 404);
+  const body = await c.req.parseBody();
+  const r = entryFromForm(body, { id, entry: info.entry });
+  if (r.errors.length) return c.html(<PiSettings id={id} info={info} entry={r.entry} errors={r.errors} raw={body} />);
+  savePiEntry(id, r.entry);
+  // "Re-apply USB rules after saving": the same job as Troubleshoot › Re-apply USB rules.
+  if (body.applyUsb === "on") {
+    const cfg = cfgNow();
+    try {
+      launch(cfg, getPi(cfg, id)!, "usb-rules");
+    } catch (e) {
+      const message = `Saved, but Re-apply USB rules didn't start: ${(e as Error).message}`;
+      return c.html(<PiSettings id={id} info={piEntry(id)!} entry={piEntry(id)!.entry} errors={[{ message }]} />);
+    }
+  }
+  return reload(c);
+});
+
+app.post("/pis/:id/remove", (c) => {
+  removePi(c.req.param("id"));
+  return reload(c);
+});
+
+/** Reset a shared Pi to gaia.config.yaml, which also restores one this computer removed. */
+app.post("/pis/:id/reset", (c) => {
+  resetPi(c.req.param("id"));
+  kickPolling();
+  return reload(c);
+});
+
+app.post("/usb-detect", async (c) => {
+  const body = await c.req.parseBody();
+  const saved = getPi(cfgNow(), String(body.id ?? ""));
+  const host = String(body.host ?? "").trim();
+  if (!host) return c.html(<p class="bad-text">Enter the Pi's host first.</p>);
+  // A saved Pi with the same host and user keeps its fallbacks and learned addresses.
+  const pi = saved && saved.host === host && saved.user === (String(body.user ?? "").trim() || "pi") ? saved : draftPi(body, String(body.id ?? ""));
+  return c.html(<UsbFound result={await detectUsb(pi)} />);
+});
+
+
 // ---- actions ----------------------------------------------------------------------------
 
 onJobFinished((job) => {
@@ -231,6 +337,7 @@ app.post("/deploy", async (c) => {
     return c.html(<ErrorNote message={(e as Error).message} />);
   }
 });
+
 
 // ---- jobs -------------------------------------------------------------------------------
 
@@ -538,7 +645,7 @@ app.get("/commander/files", (c) => {
 // ---- boot -------------------------------------------------------------------------------
 
 const cfg = cfgNow();
-startPolling(cfgNow);
+const kickPolling = startPolling(cfgNow);
 const server = Bun.serve({ hostname: HOST, port: cfg.server.port, fetch: app.fetch, idleTimeout: 0 });
 console.log(`Gaia → http://${HOST === "127.0.0.1" ? "localhost" : HOST}:${server.port}  (${cfg.pis.map((p) => `${p.name}=${p.user}@${p.host}`).join(", ")})`);
 if (cfg.problems.length) console.warn("Config problems:\n  " + cfg.problems.join("\n  "));
