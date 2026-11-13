@@ -1,5 +1,5 @@
 # Gaia
-> [!info]
+> [!note]
 > Note for Contributors: This README is intended as a human-written and relatively succinct (yet appropriately thorough) explanation and guide as to what Gaia is and how to set it up. **Do not** add every single little new feature to this document! Only update this document when it becomes factually untrue or when there is a major expansion of functionality to necessitate it. Everything else can be documented in [README_DETAILED.md](README_DETAILED.md) instead.
 
 Gaia is a lightweight utility for deploying and running the Talos Pi stack (**Operator**, **Cam Streamer**, **MediaMTX**, and **Pi-Vision**) on any number of Raspberry Pi's, as well as Commander on your own machine.
