@@ -64,10 +64,18 @@ const t = (label: string, args: string, extra: Partial<RemoteStep> = {}) => remo
 
 /**
  * The Pis have no internet (so no NTP) and no RTC: they boot at the last saved time and drift.
- * Setting the clock from this computer keeps log timestamps meaningful.
+ * Setting the clock (and timezone) from this computer keeps log timestamps meaningful.
+ * The timezone is best-effort: a failure there shouldn't block a deploy.
  */
 export function syncClock(): RemoteStep {
-  return remote("Set the Pi's clock from this computer (no internet time on the Pi)", `sudo -n date -u -s @${Math.round(Date.now() / 1000)} >/dev/null && date`);
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const setTz = tz && /^[A-Za-z0-9_+\-\/]+$/.test(tz)
+    ? ` && { [ "$(timedatectl show -p Timezone --value 2>/dev/null)" = "${tz}" ] || sudo -n timedatectl set-timezone "${tz}" || echo "warning: couldn't set the timezone to ${tz}"; }`
+    : "";
+  return remote(
+    "Set the Pi's clock and timezone from this computer (no internet time on the Pi)",
+    `sudo -n date -u -s @${Math.round(Date.now() / 1000)} >/dev/null${setTz} && date`,
+  );
 }
 
 export const ACTIONS: Action[] = [
@@ -300,10 +308,10 @@ export const ACTIONS: Action[] = [
   },
   {
     id: "sync-clock",
-    label: "Set clock from this computer",
+    label: "Set clock and timezone from this computer",
     scope: "troubleshoot",
     group: "System & network",
-    description: "The Pis have no internet time and no battery-backed clock, so after a reboot they can be days behind. Deploy does this too.",
+    description: "The Pis have no internet time and no battery-backed clock, so after a reboot they can be days behind. Also copies this computer's timezone, so container logs are in local time. Deploy does this too.",
     steps: () => [syncClock()],
   },
   {

@@ -85,6 +85,8 @@ export type Images = Record<ComponentId, string>;
  * at boot when Docker starts at boot) unless someone stopped them. Operator never restarts on
  * its own, because starting it HOMEs the arm.
  */
+const LOCALTIME = "/etc/localtime:/etc/localtime:ro";
+
 export function composeFile(cfg: Config, pi: PiCfg, images: Images): Record<string, unknown> {
   const base = (svc: ComponentId) => ({
     image: images[svc],
@@ -95,6 +97,9 @@ export function composeFile(cfg: Config, pi: PiCfg, images: Images): Record<stri
     security_opt: ["no-new-privileges:true"],
     logging: { driver: "json-file", options: { "max-size": "5m", "max-file": "2" } },
     labels: { "dev.talos.gaia.component": svc, "dev.talos.gaia.pi": pi.id },
+    // The slim images have no timezone data: share the Pi's (which deploy sets to this computer's)
+    // so local-time log lines match the wall clock. glibc, Python and Go all read this file.
+    volumes: [LOCALTIME],
   });
   const v = cfg.components.vision;
   return {
@@ -106,7 +111,7 @@ export function composeFile(cfg: Config, pi: PiCfg, images: Images): Record<stri
         environment: { ERV_CONTROLLER_PROFILE: pi.arm.controller },
         command: ["/opt/talos/erv", "/opt/talos/operator.conf"],
         devices: [`${serialDevice(pi)}:/dev/arm`],
-        volumes: ["./operator.conf:/opt/talos/operator.conf:ro", "./logs:/logs"],
+        volumes: [LOCALTIME, "./operator.conf:/opt/talos/operator.conf:ro", "./logs:/logs"],
         cpus: 0.25,
         mem_limit: "32m",
         pids_limit: 128,

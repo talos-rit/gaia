@@ -298,6 +298,21 @@ function attachJob(jobEl) {
 let logSource = null;
 const MAX_LOG_LINES = 5000;
 
+// Operator (erv) stamps lines with a UTC time of day and no date, e.g. "[T00:30:12:345Z]"
+// (its milliseconds follow a colon). Show it in this browser's local time. Today's date is
+// assumed, which only matters for the UTC offset on the day the clocks change.
+const ERV_UTC_STAMP = /^\[T(\d\d):(\d\d):(\d\d)[.:](\d{3})Z\]/;
+// Terminal colour codes (erv colours its level names); a <pre> would show them as "[0;34m".
+const ANSI_SGR = /\x1b\[[0-9;]*m/g;
+function localizeLogLine(line) {
+  return line.replace(ANSI_SGR, "").replace(ERV_UTC_STAMP, (_, h, m, s, ms) => {
+    const now = new Date();
+    const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), +h, +m, +s, +ms));
+    const pad = (n, w = 2) => String(n).padStart(w, "0");
+    return `[${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)}]`;
+  });
+}
+
 function attachLogs(pre) {
   logSource?.close();
   const root = pre.closest(".modal-content");
@@ -314,7 +329,7 @@ function attachLogs(pre) {
   es.addEventListener("open", () => (state.textContent = "streaming"));
   es.addEventListener("line", (ev) => {
     const s = document.createElement("span");
-    s.textContent = ev.data + "\n";
+    s.textContent = localizeLogLine(ev.data) + "\n";
     if (/error|fail|fault|traceback|exception/i.test(ev.data)) s.className = "err";
     else if (/warn/i.test(ev.data)) s.className = "warn";
     s.hidden = !matches(ev.data);
