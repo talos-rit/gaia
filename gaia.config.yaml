@@ -57,7 +57,7 @@ components:
 # More › Settings, and Fleet › Add a Pi): that writes gaia.local.yaml, never this file.
 #
 # The id names the Pi's devices (/dev/talos-<id>-serial) and its Commander robot entry. Fields
-# left out use defaults: user pi, controller native, homesOnStart true, operatorPort 61616,
+# left out use defaults: user pi, controller native, operatorProfile native, homesOnStart true, operatorPort 61616,
 # visionPort 5051, rtspPath <id>, inferenceFps 4, encoder hardware, telemetry true.
 pis:
   bingo:
@@ -66,7 +66,8 @@ pis:
     fallbackHosts: [192.168.0.3, 192.168.0.2]
     user: pi
     arm:
-      controller: native # ERV_CONTROLLER_PROFILE
+      controller: native # native = Scorbot controller box | talos = our custom ESP32 board
+      # operatorProfile: native # Operator's ERV_CONTROLLER_PROFILE; esp-one-axis = the old base-only ESP firmware
       homesOnStart: true # starting Operator physically HOMEs the arm -> UI asks for confirmation
       operatorPort: 61617
       visionPort: 5052
@@ -84,8 +85,9 @@ pis:
     fallbackHosts: [192.168.0.52, bluey-2.local, 192.168.0.54]
     user: pi
     arm:
-      controller: esp-one-axis
-      homesOnStart: false
+      controller: talos
+      # In the native profile Operator HOMEs on start. Unverified whether this firmware homes, so stay cautious.
+      homesOnStart: true
       telemetry: false # the custom controller sends no joint telemetry yet; flip to true once it does (see TODO.md)
       operatorPort: 61616
       visionPort: 5051

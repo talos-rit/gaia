@@ -273,7 +273,7 @@ Everything else in that menu can be safely left at defaults, but there are two t
 However, you don't need to set these now. We advise you wait until you encounter problems before starting the troubleshooting process.
 
 ##### Setting Controller Type
-This one needed more elaboration than can fit into a bullet point, but it's still (relatively) simple: Do you have a native, brand-name controller box, or our custom controller board setup powered by an ESP32? If you're using a Scorbot controller box, keep the "**Arm**" section at its defaults. Otherwise, set it to "ESP controller".
+This one needed more elaboration than can fit into a bullet point, but it's still (relatively) simple: Do you have a native, brand-name controller box, or our custom controller board setup powered by an ESP32? If you're using a Scorbot controller box, keep the "**Arm**" section at its defaults. Otherwise, set it to "Talos controller".
 
 > [!warning]
 > **At time of writing**, starting Operator does not home the ESP controller setup, and there is no telemetry implemented in the ESP firmware, so those two checkboxes should also be unchecked. However, the custom controller PCB hasn't even been finished yet; that is to say, we still have much to complete, including achieving higher firmware parity (e.g. by adding a homing sequence and adding support for the telemetry commands).

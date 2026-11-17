@@ -197,7 +197,7 @@ export const ACTIONS: Action[] = [
     group: "Devices",
     description:
       "Reset the ESP32 through the USB-serial adapter's RTS line. Fixed Bluey on 2026-11-05, when the ESP stopped answering after a Pi reboot.",
-    applies: (pi) => pi.arm.controller.startsWith("esp"),
+    applies: (pi) => pi.arm.controller === "talos",
     confirm: (pi) => `Reset ${pi.name}'s ESP controller? The arm may twitch.`,
     steps: () => [t("Pulse RTS", "esp-reset")],
   },

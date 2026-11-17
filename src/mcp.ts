@@ -141,7 +141,7 @@ function piStatus(cfg: Config, pi: PiCfg, st: PiState, detail: "summary" | "full
     ...(st.at ? { polled: `${fmtAge((Date.now() - st.at) / 1000)} ago` } : {}),
     ...(st.error ? { last_poll_error: st.error } : {}),
     ...(busy ? { busy_with: { job_id: busy.id, title: busy.title } } : {}),
-    ...(detail === "compact" ? {} : { arm: { controller: pi.arm.controller, homes_on_start: pi.arm.homesOnStart, operator_port: pi.arm.operatorPort, vision_port: pi.arm.visionPort, rtsp: rtspUrl(pi, pi.host) } }),
+    ...(detail === "compact" ? {} : { arm: { controller: pi.arm.controller, operator_profile: pi.arm.operatorProfile, homes_on_start: pi.arm.homesOnStart, operator_port: pi.arm.operatorPort, vision_port: pi.arm.visionPort, rtsp: rtspUrl(pi, pi.host) } }),
     host: {
       level: host.level,
       summary: host.summary,
