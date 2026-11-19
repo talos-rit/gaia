@@ -276,7 +276,7 @@ However, you don't need to set these now. We advise you wait until you encounter
 This one needed more elaboration than can fit into a bullet point, but it's still (relatively) simple: Do you have a native, brand-name controller box, or our custom controller board setup powered by an ESP32? If you're using a Scorbot controller box, keep the "**Arm**" section at its defaults. Otherwise, set it to "Talos controller".
 
 > [!warning]
-> **At time of writing**, starting Operator does not home the ESP controller setup, and there is no telemetry implemented in the ESP firmware, so those two checkboxes should also be unchecked. However, the custom controller PCB hasn't even been finished yet; that is to say, we still have much to complete, including achieving higher firmware parity (e.g. by adding a homing sequence and adding support for the telemetry commands).
+> **At time of writing**, the custom controller's firmware homes when Operator starts and sends joint telemetry, so leave both of those checkboxes checked. It only drives the joints we're comfortable with (base, elbow and wrist pitch), and the custom controller PCB hasn't even been finished yet; that is to say, we still have much to complete before full parity with a Scorbot controller box.
 
 ##### Identifying USB Devices
 Click the "Detect USB devices" button underneath the text boxes, then click "Use as serial adapter" and "Use as camera" as appropriate. This *should* set you up for success, though you may have to search the internet some to find out what the vendor and product IDs map to. (You could also ask an AI chatbot)

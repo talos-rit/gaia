@@ -93,9 +93,11 @@ which crashes the MJPEG dashboard stream whenever a person is detected.
 
 - [x] Per-arm `telemetry: false` in `gaia.config.yaml` (2026-11-09; set for Bluey). Operator health
       then uses container + listening socket + Pi-Vision connection, and never warns "no telemetry".
-- [ ] **When Bluey's controller gets telemetry:** remove `telemetry: false` from Bluey in
+- [ ] **Bluey's controller has telemetry now** (TELP, per Aleck 2026-11-19), but Commander showed
+      Joints (TELP) "never" on 2026-11-16. Confirm Gaia's Operator health sees fresh telemetry, then remove `telemetry: false` from Bluey in
       `gaia.config.yaml`, so Gaia checks for fresh telemetry again and catches a hung controller.
       (If no arm needs it any more, also delete the `!pi.arm.telemetry` branch in `src/core/status.ts`.)
+- Bluey's demo firmware lives on esp-driver branch `maker-fair-2026` (Aleck, temporary), not `main`.
 
 ## Where images get built (decided 2026-11-11: on the laptop)
 

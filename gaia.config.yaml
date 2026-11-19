@@ -86,7 +86,7 @@ pis:
     user: pi
     arm:
       controller: talos
-      # In the native profile Operator HOMEs on start. Unverified whether this firmware homes, so stay cautious.
+      # The firmware homes when Operator starts (native profile), confirmed 2026-11-19.
       homesOnStart: true
       telemetry: false # the custom controller sends no joint telemetry yet; flip to true once it does (see TODO.md)
       operatorPort: 61616
