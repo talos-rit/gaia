@@ -53,8 +53,6 @@ export function entryFromForm(body: Body, existing: { id: string; entry: Obj } |
 
   const arm: Obj = { ...baseArm };
   if (str(body, "arm.controller")) arm.controller = str(body, "arm.controller");
-  // The one-axis ESP protocol only exists on Talos boards; a Scorbot box always speaks native.
-  if (arm.controller !== "talos") delete arm.operatorProfile;
   arm.homesOnStart = body["arm.homesOnStart"] === "on";
   if (body["arm.telemetry"] !== "on") arm.telemetry = false;
   for (const k of ["operatorPort", "visionPort", "inferenceFps"]) {

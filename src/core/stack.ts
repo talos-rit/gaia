@@ -1,4 +1,4 @@
-import type { ComponentId, Config, PiCfg } from "./config.ts";
+import { OPERATOR_PROFILE, type ComponentId, type Config, type PiCfg } from "./config.ts";
 
 /**
  * Docker CLI prefix for a Pi. "system" is a normal Docker install with the SSH user in the
@@ -108,7 +108,7 @@ export function composeFile(cfg: Config, pi: PiCfg, images: Images): Record<stri
       operator: {
         ...base("operator"),
         restart: "no", // deliberate: an automatic Operator restart would HOME the arm unattended
-        environment: { ERV_CONTROLLER_PROFILE: pi.arm.operatorProfile },
+        environment: { ERV_CONTROLLER_PROFILE: OPERATOR_PROFILE },
         command: ["/opt/talos/erv", "/opt/talos/operator.conf"],
         devices: [`${serialDevice(pi)}:/dev/arm`],
         volumes: [LOCALTIME, "./operator.conf:/opt/talos/operator.conf:ro", "./logs:/logs"],

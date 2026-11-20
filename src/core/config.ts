@@ -52,14 +52,13 @@ export type ControllerType = "native" | "talos";
 export const CONTROLLER_TYPES: ControllerType[] = ["native", "talos"];
 /**
  * The serial protocol Operator speaks (its ERV_CONTROLLER_PROFILE; Commander's controller_profile).
- * Both controllers speak "native" now; "esp-one-axis" is the base-only protocol of the old
- * one-axis-demo ESP firmware.
+ * Both controller types speak native; Operator's other profile, esp-one-axis, was for firmware no
+ * board runs any more.
  */
-export const OPERATOR_PROFILES = ["native", "esp-one-axis"];
+export const OPERATOR_PROFILE = "native";
 
 export interface ArmCfg {
   controller: ControllerType;
-  operatorProfile: string;
   homesOnStart: boolean;
   operatorPort: number;
   visionPort: number;
@@ -172,19 +171,17 @@ export const DEFAULTS = {
 /** Defaults for the arm fields a Pi entry may leave out (also the Pi settings form's placeholders). */
 export const ARM_DEFAULTS = {
   controller: "native",
-  operatorProfile: "native",
   operatorPort: 61616,
   visionPort: 5051,
   inferenceFps: 4,
   encoder: "hardware",
 } as const;
 
-/** Before controller types, `controller` held the Operator profile; `esp-one-axis` meant a Talos board. */
+/** Before controller types, `controller` held the Operator profile, and `esp-one-axis` meant a Talos board. */
 const LEGACY_CONTROLLER = "esp-one-axis";
 
 export function piFromEntry(id: string, p: Obj): PiCfg {
   const arm = (isObj(p.arm) ? p.arm : {}) as Obj;
-  const legacy = arm.controller === LEGACY_CONTROLLER;
   return {
     id,
     name: String(p.name ?? id),
@@ -195,8 +192,7 @@ export function piFromEntry(id: string, p: Obj): PiCfg {
     runtime: p.runtime === "isolated" ? "isolated" : "system",
     runtimeDir: String(p.runtimeDir ?? "/opt/talos-docker/29.8.2"),
     arm: {
-      controller: legacy || arm.controller === "talos" ? "talos" : "native",
-      operatorProfile: String(arm.operatorProfile ?? (legacy ? LEGACY_CONTROLLER : ARM_DEFAULTS.operatorProfile)),
+      controller: arm.controller === "talos" || arm.controller === LEGACY_CONTROLLER ? "talos" : "native",
       // Unset means "homes": the cautious reading, since Gaia then asks before starting Operator.
       homesOnStart: arm.homesOnStart !== false,
       operatorPort: Number(arm.operatorPort ?? ARM_DEFAULTS.operatorPort),
@@ -233,8 +229,6 @@ export function loadConfig(): Config {
     const arm = isObj(entry.arm) ? entry.arm : {};
     if (arm.controller != null && arm.controller !== LEGACY_CONTROLLER && !CONTROLLER_TYPES.includes(arm.controller as ControllerType))
       problems.push(`pis.${id}.arm.controller must be ${CONTROLLER_TYPES.join(" or ")}`);
-    if (arm.operatorProfile != null && !OPERATOR_PROFILES.includes(String(arm.operatorProfile)))
-      problems.push(`pis.${id}.arm.operatorProfile must be ${OPERATOR_PROFILES.join(" or ")}`);
     pis.push(piFromEntry(id, entry));
   }
   const stack = (raw.stack ?? {}) as Obj;
@@ -273,7 +267,7 @@ function writeLocal(local: Obj) {
 
 /**
  * One-time rewrite of a gaia.local.yaml from before controller types: `controller: esp-one-axis`
- * becomes `controller: talos` + `operatorProfile: esp-one-axis`, so the arm behaves as before.
+ * becomes `controller: talos`.
  * (gaia.config.yaml is the team's file and was migrated in git.)
  */
 function migrateLocal() {
@@ -283,7 +277,6 @@ function migrateLocal() {
     const arm = isObj(entry) && isObj(entry.arm) ? entry.arm : undefined;
     if (arm?.controller !== LEGACY_CONTROLLER) continue;
     arm.controller = "talos";
-    arm.operatorProfile ??= LEGACY_CONTROLLER;
     changed = true;
   }
   if (changed) writeLocal(local);

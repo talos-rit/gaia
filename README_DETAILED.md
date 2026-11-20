@@ -103,7 +103,7 @@ pis:
 
 Pis are keyed by id. The id names the Pi's devices (`/dev/talos-<id>-serial`) and its robot entry in Commander, so it can't be changed once set. A Pi entry only needs `host`; the other fields have defaults (listed at the top of `pis:` in `gaia.config.yaml`).
 
-`arm.controller` is the hardware: `native` (a Scorbot controller box) or `talos` (our custom ESP32 board). Gaia keys hardware differences on it, such as offering **Reset ESP** only on `talos`. The protocol Operator speaks is a separate key, `arm.operatorProfile` (`native` by default, `esp-one-axis` for the old base-only ESP firmware). Gaia passes it to Operator as `ERV_CONTROLLER_PROFILE` and to Commander as `controller_profile`. Older configs that say `controller: esp-one-axis` still load, and Gaia rewrites them in `gaia.local.yaml` as `controller: talos` + `operatorProfile: esp-one-axis`.
+`arm.controller` is the hardware: `native` (a Scorbot controller box) or `talos` (our custom ESP32 board). Gaia keys hardware differences on it: **Reset ESP** is only offered on `talos`, and Commander's config never tracks with the shoulder on `talos`, which doesn't drive it. Both speak Operator's `native` protocol. Older configs that say `controller: esp-one-axis` (Operator's profile for the retired one-axis firmware) still load as `talos`, and Gaia rewrites them that way in `gaia.local.yaml`.
 
 **Not in the RIT lab?** Open each lab Pi's **More › Settings** and choose **Remove from Gaia**, then add your own. This only writes `bingo: null` and `bluey: null` to your `gaia.local.yaml`, so pulling new versions of Gaia never conflicts. Removed Pis can be restored from **Fleet › Add a Pi**.
 

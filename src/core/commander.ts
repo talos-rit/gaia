@@ -9,7 +9,7 @@
  */
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { ROOT, type Config, type PiCfg } from "./config.ts";
+import { OPERATOR_PROFILE, ROOT, type Config, type PiCfg } from "./config.ts";
 import type { Lockable, Step } from "./jobs.ts";
 import { task, type Stage } from "./pipeline.ts";
 import { runArgv, sq } from "./ssh.ts";
@@ -297,13 +297,14 @@ function robotEntry(pi: PiCfg): Record<string, unknown> {
     robot_id: pi.id,
     socket_host: pi.host,
     socket_port: pi.arm.operatorPort,
-    controller_profile: pi.arm.operatorProfile,
+    controller_profile: OPERATOR_PROFILE,
     camera_index: rtspUrl(pi, pi.host),
     pi_vision_enabled: true,
     pi_vision_url: `http://${pi.host}:${pi.arm.visionPort}`,
   };
-  // Vertical tracking needs joint telemetry; the one-axis ESP protocol has neither.
-  if (pi.arm.operatorProfile === "esp-one-axis" || !pi.arm.telemetry) Object.assign(e, { track_elbow: false, track_shoulder: false, track_polar_vertical: false });
+  // Vertical tracking needs joint telemetry. Talos boards don't drive the shoulder (axis 2).
+  if (!pi.arm.telemetry) Object.assign(e, { track_elbow: false, track_shoulder: false, track_polar_vertical: false });
+  else if (pi.arm.controller === "talos") e.track_shoulder = false;
   return e;
 }
 

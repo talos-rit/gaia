@@ -1,5 +1,5 @@
 import { resolve } from "node:path";
-import { COMPONENTS, type ComponentId, type Config, type PiCfg } from "./config.ts";
+import { COMPONENTS, OPERATOR_PROFILE, type ComponentId, type Config, type PiCfg } from "./config.ts";
 import { learnAddresses, runRemote, Unreachable, sq } from "./ssh.ts";
 import { cameraDevice, docker, serialDevice } from "./stack.ts";
 
@@ -239,7 +239,7 @@ export const sinceStart = (c: Container | undefined, d: ProbeData) => (c?.starte
 
 function profileDetails(pi: PiCfg, d: ProbeData): string[] {
   const p = d.vision.control?.controller_profile;
-  return p ? [`controller profile ${p}${p === pi.arm.operatorProfile ? " ✓" : ` (expected ${pi.arm.operatorProfile})`}`] : [];
+  return p ? [`controller profile ${p}${p === OPERATOR_PROFILE ? " ✓" : ` (expected ${OPERATOR_PROFILE})`}`] : [];
 }
 
 function containerGate(c: Container | undefined, data: ProbeData): Health | null {
@@ -342,8 +342,8 @@ export function componentHealth(cfg: Config, pi: PiCfg, st: PiState, svc: Compon
   const opUp = containerFor(cfg, d, "operator")?.state === "running" && d.operator.listening;
   const noOperator = !!ctl && !ctl.controller_profile && (!opUp || s.operator?.connected === false);
   if (noOperator) details.push(`Operator ${opUp ? "not connected" : "not running"}: no arm control (controller profile is checked once it connects)`);
-  else if (ctl && ctl.controller_profile !== pi.arm.operatorProfile)
-    return { level: "warn", summary: `controller profile ${ctl.controller_profile ?? "unknown"} ≠ expected ${pi.arm.operatorProfile}: Commander blocks motion`, details };
+  else if (ctl && ctl.controller_profile !== OPERATOR_PROFILE)
+    return { level: "warn", summary: `controller profile ${ctl.controller_profile ?? "unknown"} ≠ expected ${OPERATOR_PROFILE}: Commander blocks motion`, details };
   if (s.pose && !s.pose.available) return { level: "bad", summary: "pose model unavailable", details };
   if (o && o.enabled === false) return { level: "warn", summary: "perception paused", details };
   const fps = o?.fps ?? s.fps;
