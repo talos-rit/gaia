@@ -109,7 +109,9 @@ export function composeFile(cfg: Config, pi: PiCfg, images: Images): Record<stri
         ...base("operator"),
         restart: "no", // deliberate: an automatic Operator restart would HOME the arm unattended
         environment: { ERV_CONTROLLER_PROFILE: OPERATOR_PROFILE },
-        command: ["/opt/talos/erv", "/opt/talos/operator.conf"],
+        // stdout isn't a terminal here, so erv's output would arrive in 4 KB batches; stdbuf makes it
+        // line-buffered so the container logs are live. (stdbuf execs erv, so signals still reach it.)
+        command: ["stdbuf", "-oL", "-eL", "/opt/talos/erv", "/opt/talos/operator.conf"],
         devices: [`${serialDevice(pi)}:/dev/arm`],
         volumes: [LOCALTIME, "./operator.conf:/opt/talos/operator.conf:ro", "./logs:/logs"],
         cpus: 0.25,
