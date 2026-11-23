@@ -85,7 +85,7 @@ pis:
     user: pi
     arm:
       controller: talos
-      # The firmware homes when Operator starts (native profile), confirmed 2026-11-19.
+      # Operator's HOME moves the arm: Maker Faire firmware drives it back to its power-on pose.
       homesOnStart: true
       operatorPort: 61616
       visionPort: 5051
