@@ -137,7 +137,49 @@ log = None
 if os.path.exists(log_path):
     _, tail, _ = run(["tail", "-n", "6", log_path], 2)
     log = {"age_s": round(time.time() - os.path.getmtime(log_path), 1), "tail": tail.splitlines()}
-out["operator"] = {"listening": listening, "log": log}
+
+
+def serial_link(path, window_s=60):
+    """Sum the "Serial link:" summaries Operator logs every 10 s over the last minute.
+
+    Operator counts how many LISTPV replies came back damaged and how often it had to
+    recover a lost prompt; a loose serial connector shows up here long before the arm
+    stops responding. Builds without these lines (before 2026-11-23) give None.
+    """
+    try:
+        size = os.path.getsize(path)
+        with open(path, "rb") as f:
+            f.seek(max(0, size - 256 * 1024))
+            lines = f.read().decode(errors="replace").splitlines()
+    except OSError:
+        return None
+    now = time.gmtime()
+    now_s = now.tm_hour * 3600 + now.tm_min * 60 + now.tm_sec
+    total, reports, newest = {}, 0, None
+    for line in reversed(lines):
+        if "Serial link:" not in line:
+            continue
+        m = re.match(r"\[T(\d\d):(\d\d):(\d\d):\d+Z\]", line)
+        if not m:
+            continue
+        # Operator stamps UTC time of day without a date.
+        age = (now_s - (int(m.group(1)) * 3600 + int(m.group(2)) * 60 + int(m.group(3)))) % 86400
+        if newest is None:
+            newest = age
+        if age > newest + window_s:
+            break
+        fields = dict(re.findall(r"(\w+)=(\d+)", line.split("Serial link:", 1)[1]))
+        for k in ("polls", "damaged", "joint", "framing", "recoveries"):
+            total[k] = total.get(k, 0) + int(fields.get(k, 0))
+        if reports == 0:
+            total["quiet_ms"] = int(fields.get("quiet_ms", 0))
+        reports += 1
+    if not reports:
+        return None
+    return {**total, "reports": reports, "age_s": newest}
+
+
+out["operator"] = {"listening": listening, "log": log, "link": serial_link(log_path) if log else None}
 
 # ---- pi-vision ---------------------------------------------------------------------------
 # "localhost" resolves to both 127.0.0.1 and ::1, so an IPv6-only listener still answers.
