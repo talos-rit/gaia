@@ -66,7 +66,7 @@ pis:
     fallbackHosts: [192.168.0.3, 192.168.0.2]
     user: pi
     arm:
-      controller: native # ERV_CONTROLLER_PROFILE
+      controller: native # native = Scorbot controller box | talos = our custom ESP32 board
       homesOnStart: true # starting Operator physically HOMEs the arm -> UI asks for confirmation
       operatorPort: 61617
       visionPort: 5052
@@ -84,9 +84,9 @@ pis:
     fallbackHosts: [192.168.0.52, bluey-2.local, 192.168.0.54]
     user: pi
     arm:
-      controller: esp-one-axis
-      homesOnStart: false
-      telemetry: false # the custom controller sends no joint telemetry yet; flip to true once it does (see TODO.md)
+      controller: talos
+      # Operator's HOME moves the arm: Maker Faire firmware drives it back to its power-on pose.
+      homesOnStart: true
       operatorPort: 61616
       visionPort: 5051
       rtspPath: camera

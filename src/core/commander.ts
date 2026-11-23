@@ -9,7 +9,7 @@
  */
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { ROOT, type Config, type PiCfg } from "./config.ts";
+import { OPERATOR_PROFILE, ROOT, type Config, type PiCfg } from "./config.ts";
 import type { Lockable, Step } from "./jobs.ts";
 import { task, type Stage } from "./pipeline.ts";
 import { runArgv, sq } from "./ssh.ts";
@@ -291,21 +291,20 @@ export async function fetchBranches(cfg: Config) {
 
 // ---- Commander's config files (created once, never overwritten) -----------------------------
 
-const PROFILES = ["native", "esp-one-axis"];
-
 /** One robot_configs.local.yaml entry per Pi, in the shape of Commander's docs/examples/two-pi-robots.yaml. */
 function robotEntry(pi: PiCfg): Record<string, unknown> {
   const e: Record<string, unknown> = {
     robot_id: pi.id,
     socket_host: pi.host,
     socket_port: pi.arm.operatorPort,
-    ...(PROFILES.includes(pi.arm.controller) ? { controller_profile: pi.arm.controller } : {}),
+    controller_profile: OPERATOR_PROFILE,
     camera_index: rtspUrl(pi, pi.host),
     pi_vision_enabled: true,
     pi_vision_url: `http://${pi.host}:${pi.arm.visionPort}`,
   };
-  // Vertical tracking needs joint telemetry; the one-axis ESP controller has neither.
-  if (pi.arm.controller === "esp-one-axis" || !pi.arm.telemetry) Object.assign(e, { track_elbow: false, track_shoulder: false, track_polar_vertical: false });
+  // Vertical tracking needs joint telemetry. Talos boards don't drive the shoulder (axis 2).
+  if (!pi.arm.telemetry) Object.assign(e, { track_elbow: false, track_shoulder: false, track_polar_vertical: false });
+  else if (pi.arm.controller === "talos") e.track_shoulder = false;
   return e;
 }
 

@@ -91,11 +91,14 @@ which crashes the MJPEG dashboard stream whenever a person is detected.
 
 ## Bluey: no telemetry on the custom controller
 
-- [x] Per-arm `telemetry: false` in `gaia.config.yaml` (2026-11-09; set for Bluey). Operator health
-      then uses container + listening socket + Pi-Vision connection, and never warns "no telemetry".
-- [ ] **When Bluey's controller gets telemetry:** remove `telemetry: false` from Bluey in
-      `gaia.config.yaml`, so Gaia checks for fresh telemetry again and catches a hung controller.
-      (If no arm needs it any more, also delete the `!pi.arm.telemetry` branch in `src/core/status.ts`.)
+- [x] Per-arm `telemetry: false` in `gaia.config.yaml` (2026-11-09; set for Bluey).
+- [x] Bluey's firmware sends TELP now (Jacob/Aleck, 2026-11-19), so `feat/controller-types` drops
+      Bluey's `telemetry: false`. No arm needs the flag; the `!pi.arm.telemetry` branch in
+      `src/core/status.ts` stays for new setups whose controller has none.
+- Bluey's demo firmware lives on esp-driver branch `maker-fair-2026` (Aleck, temporary), not `main`.
+  Its limit-switch homing is off: HOME drives the arm back to wherever it was when the ESP powered
+  on, so pose the arm at home before powering the ESP. Revisit `homesOnStart` and the README's
+  custom-controller note when real homing returns.
 
 ## Where images get built (decided 2026-11-11: on the laptop)
 

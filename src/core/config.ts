@@ -44,8 +44,21 @@ export interface UsbMatch {
   product?: string;
 }
 
+/**
+ * What drives the arm: the Scorbot's own controller box, or the team's custom ESP32 board. Gaia
+ * keys hardware differences (e.g. Reset ESP) on this, never on the Operator profile.
+ */
+export type ControllerType = "native" | "talos";
+export const CONTROLLER_TYPES: ControllerType[] = ["native", "talos"];
+/**
+ * The serial protocol Operator speaks (its ERV_CONTROLLER_PROFILE; Commander's controller_profile).
+ * Both controller types speak native; Operator's other profile, esp-one-axis, was for firmware no
+ * board runs any more.
+ */
+export const OPERATOR_PROFILE = "native";
+
 export interface ArmCfg {
-  controller: string;
+  controller: ControllerType;
   homesOnStart: boolean;
   operatorPort: number;
   visionPort: number;
@@ -176,7 +189,7 @@ export function piFromEntry(id: string, p: Obj): PiCfg {
     runtime: p.runtime === "isolated" ? "isolated" : "system",
     runtimeDir: String(p.runtimeDir ?? "/opt/talos-docker/29.8.2"),
     arm: {
-      controller: String(arm.controller ?? ARM_DEFAULTS.controller),
+      controller: arm.controller === "talos" ? "talos" : "native",
       // Unset means "homes": the cautious reading, since Gaia then asks before starting Operator.
       homesOnStart: arm.homesOnStart !== false,
       operatorPort: Number(arm.operatorPort ?? ARM_DEFAULTS.operatorPort),
@@ -194,6 +207,7 @@ export function loadConfig(): Config {
   const problems: string[] = [];
   let raw: Obj = {};
   try {
+    migrateLocal();
     raw = merge(readYaml(CONFIG_FILE), readYaml(LOCAL_CONFIG_FILE)) as Obj;
   } catch (e) {
     problems.push(`Could not parse config: ${(e as Error).message}`);
@@ -209,6 +223,9 @@ export function loadConfig(): Config {
     if (!isObj(entry)) continue;
     if (!PI_ID.test(id)) problems.push(`Pi id "${id}" must be lowercase letters, digits or dashes`);
     if (!entry.host) problems.push(`pis.${id}.host is required`);
+    const arm = isObj(entry.arm) ? entry.arm : {};
+    if (arm.controller != null && !CONTROLLER_TYPES.includes(arm.controller as ControllerType))
+      problems.push(`pis.${id}.arm.controller must be ${CONTROLLER_TYPES.join(" or ")}`);
     pis.push(piFromEntry(id, entry));
   }
   const stack = (raw.stack ?? {}) as Obj;
@@ -243,6 +260,26 @@ function writeLocal(local: Obj) {
   if (isObj(local.pis) && Object.keys(local.pis).length === 0) delete local.pis;
   if (isObj(local.components) && Object.keys(local.components).length === 0) delete local.components;
   writeFileSync(LOCAL_CONFIG_FILE, LOCAL_HEADER + (Object.keys(local).length ? Bun.YAML.stringify(local, null, 2) + "\n" : ""));
+}
+
+/** Before controller types, `controller` held the Operator profile, and `esp-one-axis` meant a Talos board. */
+const LEGACY_CONTROLLER = "esp-one-axis";
+
+/**
+ * One-time rewrite of a gaia.local.yaml from before controller types: `controller: esp-one-axis`
+ * becomes `controller: talos`. This is the only place the old value is understood.
+ * (gaia.config.yaml is the team's file and was migrated in git.)
+ */
+function migrateLocal() {
+  const local = readYaml(LOCAL_CONFIG_FILE);
+  let changed = false;
+  for (const entry of Object.values(isObj(local.pis) ? local.pis : {})) {
+    const arm = isObj(entry) && isObj(entry.arm) ? entry.arm : undefined;
+    if (arm?.controller !== LEGACY_CONTROLLER) continue;
+    arm.controller = "talos";
+    changed = true;
+  }
+  if (changed) writeLocal(local);
 }
 
 /** Persist a component source override to gaia.local.yaml (other local settings are preserved). */

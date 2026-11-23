@@ -98,10 +98,12 @@ Gaia reads two files:
 pis:
   bluey: { fallbackHosts: [10.0.0.42] }
   bingo: null
-  shelf-pi: { name: Shelf Pi, host: shelf.local, arm: { controller: esp-one-axis, homesOnStart: false } }
+  shelf-pi: { name: Shelf Pi, host: shelf.local, arm: { controller: talos, homesOnStart: false } }
 ```
 
 Pis are keyed by id. The id names the Pi's devices (`/dev/talos-<id>-serial`) and its robot entry in Commander, so it can't be changed once set. A Pi entry only needs `host`; the other fields have defaults (listed at the top of `pis:` in `gaia.config.yaml`).
+
+`arm.controller` is the hardware: `native` (a Scorbot controller box) or `talos` (our custom ESP32 board). Gaia keys hardware differences on it: **Reset ESP** is only offered on `talos`, and Commander's config never tracks with the shoulder on `talos`, which doesn't drive it. Both speak Operator's `native` protocol. Gaia rewrites an older `gaia.local.yaml` that says `controller: esp-one-axis` (Operator's profile for the retired one-axis firmware) to `talos` the next time it loads.
 
 **Not in the RIT lab?** Open each lab Pi's **More › Settings** and choose **Remove from Gaia**, then add your own. This only writes `bingo: null` and `bluey: null` to your `gaia.local.yaml`, so pulling new versions of Gaia never conflicts. Removed Pis can be restored from **Fleet › Add a Pi**.
 
@@ -137,7 +139,7 @@ What changed compared with the old scripts:
 - There are four images, one per component, instead of one shared `talos-arms` image. MediaMTX moved from a host service into the stack.
 - A normal Docker install replaces the isolated `talos-docker.service` runtime.
 - Images are built on your laptop rather than on the Pi. No venv or binary is copied, and the Pi needs no build tools.
-- `compose.yaml` is generated per Pi, so each Pi runs four services with no profiles.
+- `compose.yaml` is generated per Pi, so each Pi runs four services with no profiles. A hand-made `compose.override.yaml` would silently change it, so deploy renames one to `compose.override.yaml.disabled`.
 - The vision container has a Docker healthcheck.
 
 The resource caps, SIGINT shutdown, host networking and `/dev/video11` passthrough are unchanged.

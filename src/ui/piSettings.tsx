@@ -10,8 +10,8 @@ import { Check, errorsFor, Field, Fold, FormErrors, Section, SettingsForm, type 
 type Obj = Record<string, unknown>;
 
 const CONTROLLERS = [
-  { value: "native", label: "Scorbot controller (native)" },
-  { value: "esp-one-axis", label: "ESP controller, one axis (esp-one-axis)" },
+  { value: "native", label: "Scorbot controller box (native)" },
+  { value: "talos", label: "Talos controller, ESP32 (talos)" },
 ];
 
 const get = (o: unknown, path: string): unknown => path.split(".").reduce<unknown>((v, k) => (v && typeof v === "object" ? (v as Obj)[k] : undefined), o);
