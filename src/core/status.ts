@@ -75,7 +75,7 @@ export interface ProbeData {
     error: string | null;
     paths?: { name: string; ready: boolean; tracks: string[] | null; bytes_received: number; readers: number; source: string | null }[];
   };
-  operator: { listening: boolean; log: { age_s: number; tail: string[] } | null };
+  operator: { listening: boolean; log: { age_s: number; tail: string[] } | null; link?: SerialLinkStats | null };
   vision: {
     reachable: boolean;
     error: string | null;
@@ -94,6 +94,18 @@ export interface ProbeData {
     observations?: { enabled: boolean; sequence: number | null; detections: number; fps: number; inference_s: number };
   };
   rtsp?: RtspResult;
+}
+
+/** Operator's "Serial link:" summaries over the last minute (Operator builds from 2026-11-23). */
+export interface SerialLinkStats {
+  polls: number;
+  damaged: number;
+  joint: number;
+  framing: number;
+  recoveries: number;
+  quiet_ms: number;
+  reports: number;
+  age_s: number;
 }
 
 export interface PiState {
@@ -242,6 +254,33 @@ function profileDetails(pi: PiCfg, d: ProbeData): string[] {
   return p ? [`controller profile ${p}${p === OPERATOR_PROFILE ? " ✓" : ` (expected ${OPERATOR_PROFILE})`}`] : [];
 }
 
+// A healthy link damages well under 1% of replies; at Maker Faire a loose
+// connector showed 6-11% about 45 minutes before Bingo stopped answering, then 25-75%.
+const LINK_WARN_DAMAGED = 0.02;
+const LINK_BAD_DAMAGED = 0.15;
+
+/** The serial link's health from Operator's own counts, or null if this build doesn't report them. */
+function serialLinkHealth(link: SerialLinkStats | null | undefined): Health | null {
+  if (!link || link.age_s > 30) return null;
+  const pct = (n: number) => `${((100 * n) / link.polls).toFixed(1)}%`;
+  const counts = `${link.damaged} of ${link.polls} replies damaged, ${link.framing} framing errors, last minute`;
+  const fix = "Reseat the serial cable at both ends and screw it in.";
+  if (link.recoveries > 0)
+    return {
+      level: link.recoveries > 2 ? "bad" : "warn",
+      summary: `serial link dropping data: Operator recovered ${link.recoveries} lost prompt${link.recoveries === 1 ? "" : "s"} in the last minute`,
+      details: [counts, fix],
+    };
+  if (link.polls >= 20) {
+    const ratio = link.damaged / link.polls;
+    if (ratio >= LINK_BAD_DAMAGED)
+      return { level: "bad", summary: `serial link failing: ${pct(link.damaged)} of replies damaged`, details: [counts, fix] };
+    if (ratio >= LINK_WARN_DAMAGED)
+      return { level: "warn", summary: `serial link noisy: ${pct(link.damaged)} of replies damaged`, details: [counts, fix] };
+  }
+  return { level: "ok", summary: "serial link clean", details: [link.polls ? counts : "no telemetry polls in the last minute (arm moving?)"] };
+}
+
 function containerGate(c: Container | undefined, data: ProbeData): Health | null {
   if (!data.runtime.up) return { level: "off", summary: "Docker runtime not running", details: [`${data.runtime.error ?? ""}. Start brings it up.`] };
   if (!c) return { level: "off", summary: data.stack.deployed ? "no container (use Start)" : "not deployed", details: [] };
@@ -277,14 +316,23 @@ export function componentHealth(cfg: Config, pi: PiCfg, st: PiState, svc: Compon
         details: [...details, ...profileDetails(pi, d), "this controller sends no telemetry (arm.telemetry: false), so arm health is unverified"],
       };
     }
-    if (vs?.telemetry.received && (vs.telemetry.age_s ?? 99) < 3)
-      return { level: "ok", summary: `arm telemetry ${vs.telemetry.age_s?.toFixed(1)}s old`, details: [...details, ...profileDetails(pi, d)] };
+    const link = serialLinkHealth(d.operator.link);
+    const quiet_s = d.operator.link ? d.operator.link.quiet_ms / 1000 : 0;
+    const silent = quiet_s >= 10 ? [`the controller has sent nothing for ${fmtAge(quiet_s)}: check the serial cable is seated, then that the controller is powered`] : [];
+    if (vs?.telemetry.received && (vs.telemetry.age_s ?? 99) < 3) {
+      if (link && link.level !== "ok") return { ...link, details: [...link.details, ...details] };
+      return {
+        level: "ok",
+        summary: `arm telemetry ${vs.telemetry.age_s?.toFixed(1)}s old`,
+        details: [...details, ...(link ? [`serial link: ${link.details[0]}`] : []), ...profileDetails(pi, d)],
+      };
+    }
     if (vs?.telemetry.received)
-      return { level: "bad", summary: `arm telemetry stale (${fmtAge(vs.telemetry.age_s ?? Infinity)}): controller not responding`, details: [...details, "Check the controller is powered; see Log file for its last words."] };
+      return { level: "bad", summary: `arm telemetry stale (${fmtAge(vs.telemetry.age_s ?? Infinity)}): controller not responding`, details: [...details, ...silent, ...(link && link.level !== "ok" ? [link.summary] : []), "Check the controller is powered; see Log file for its last words."] };
     if (vs && vs.operator && !vs.operator.connected)
       return { level: "warn", summary: `listening; Pi-Vision not connected`, details };
     if (vs && !vs.telemetry.received)
-      return { level: "warn", summary: "no arm telemetry (controller off? ESP stuck?)", details: [...details, pi.arm.controller === "talos" ? "Try Troubleshoot > Reset ESP." : "Is the controller powered?"] };
+      return { level: "warn", summary: "no arm telemetry (controller off? ESP stuck?)", details: [...details, ...silent, pi.arm.controller === "talos" ? "Try Troubleshoot > Reset ESP." : "Is the controller powered? Is the serial cable seated?"] };
     return { level: "ok", summary: `listening on :${pi.arm.operatorPort}`, details: [...details, "telemetry unverified (Pi-Vision is down)"] };
   }
 
