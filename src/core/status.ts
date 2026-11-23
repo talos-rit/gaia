@@ -254,9 +254,11 @@ function profileDetails(pi: PiCfg, d: ProbeData): string[] {
   return p ? [`controller profile ${p}${p === OPERATOR_PROFILE ? " ✓" : ` (expected ${OPERATOR_PROFILE})`}`] : [];
 }
 
-// A healthy link damages well under 1% of replies; at Maker Faire a loose
-// connector showed 6-11% about 45 minutes before Bingo stopped answering, then 25-75%.
-const LINK_WARN_DAMAGED = 0.02;
+// A healthy link damages under 1% of replies, in short bursts (a reply or two
+// after a jog); at Maker Faire a loose connector showed 6-11% about 45 minutes
+// before Bingo stopped answering, then 25-75%.
+const LINK_WARN_DAMAGED = 0.05;
+const LINK_WARN_MIN_DAMAGED = 3;
 const LINK_BAD_DAMAGED = 0.15;
 
 /** The serial link's health from Operator's own counts, or null if this build doesn't report them. */
@@ -275,7 +277,7 @@ function serialLinkHealth(link: SerialLinkStats | null | undefined): Health | nu
     const ratio = link.damaged / link.polls;
     if (ratio >= LINK_BAD_DAMAGED)
       return { level: "bad", summary: `serial link failing: ${pct(link.damaged)} of replies damaged`, details: [counts, fix] };
-    if (ratio >= LINK_WARN_DAMAGED)
+    if (ratio >= LINK_WARN_DAMAGED && link.damaged >= LINK_WARN_MIN_DAMAGED)
       return { level: "warn", summary: `serial link noisy: ${pct(link.damaged)} of replies damaged`, details: [counts, fix] };
   }
   return { level: "ok", summary: "serial link clean", details: [link.polls ? counts : "no telemetry polls in the last minute (arm moving?)"] };
