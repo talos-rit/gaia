@@ -388,11 +388,18 @@ export async function deploy(job: Job, cfg: Config, pis: PiCfg[], opts: DeployOp
     };
     await upload(job, cfg, pi, stackFiles(cfg, pi, images, manifest));
     // Validate before touching any running container, so a bad file can't leave a half-started stack.
+    // Compose would also load a hand-made compose.override.yaml and silently override what Gaia
+    // deploys (it happened on Bluey), so move one aside first.
     await job.run({
       label: `${pi.name}: validate compose.yaml`,
       where: "remote",
       pi,
-      cmd: inStack(cfg, `${compose(pi)} config --quiet && echo "compose.yaml is valid"`),
+      cmd: inStack(
+        cfg,
+        `if [ -f compose.override.yaml ]; then mv compose.override.yaml compose.override.yaml.disabled && ` +
+          `echo "moved a hand-made compose.override.yaml aside to compose.override.yaml.disabled: Gaia's compose.yaml is the whole config"; fi; ` +
+          `${compose(pi)} config --quiet && echo "compose.yaml is valid"`,
+      ),
     });
     if (opts.start) {
       // MediaMTX moved into the stack; the old host service would hold port 8554.

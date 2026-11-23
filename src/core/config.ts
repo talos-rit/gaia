@@ -177,9 +177,6 @@ export const ARM_DEFAULTS = {
   encoder: "hardware",
 } as const;
 
-/** Before controller types, `controller` held the Operator profile, and `esp-one-axis` meant a Talos board. */
-const LEGACY_CONTROLLER = "esp-one-axis";
-
 export function piFromEntry(id: string, p: Obj): PiCfg {
   const arm = (isObj(p.arm) ? p.arm : {}) as Obj;
   return {
@@ -192,7 +189,7 @@ export function piFromEntry(id: string, p: Obj): PiCfg {
     runtime: p.runtime === "isolated" ? "isolated" : "system",
     runtimeDir: String(p.runtimeDir ?? "/opt/talos-docker/29.8.2"),
     arm: {
-      controller: arm.controller === "talos" || arm.controller === LEGACY_CONTROLLER ? "talos" : "native",
+      controller: arm.controller === "talos" ? "talos" : "native",
       // Unset means "homes": the cautious reading, since Gaia then asks before starting Operator.
       homesOnStart: arm.homesOnStart !== false,
       operatorPort: Number(arm.operatorPort ?? ARM_DEFAULTS.operatorPort),
@@ -227,7 +224,7 @@ export function loadConfig(): Config {
     if (!PI_ID.test(id)) problems.push(`Pi id "${id}" must be lowercase letters, digits or dashes`);
     if (!entry.host) problems.push(`pis.${id}.host is required`);
     const arm = isObj(entry.arm) ? entry.arm : {};
-    if (arm.controller != null && arm.controller !== LEGACY_CONTROLLER && !CONTROLLER_TYPES.includes(arm.controller as ControllerType))
+    if (arm.controller != null && !CONTROLLER_TYPES.includes(arm.controller as ControllerType))
       problems.push(`pis.${id}.arm.controller must be ${CONTROLLER_TYPES.join(" or ")}`);
     pis.push(piFromEntry(id, entry));
   }
@@ -265,9 +262,12 @@ function writeLocal(local: Obj) {
   writeFileSync(LOCAL_CONFIG_FILE, LOCAL_HEADER + (Object.keys(local).length ? Bun.YAML.stringify(local, null, 2) + "\n" : ""));
 }
 
+/** Before controller types, `controller` held the Operator profile, and `esp-one-axis` meant a Talos board. */
+const LEGACY_CONTROLLER = "esp-one-axis";
+
 /**
  * One-time rewrite of a gaia.local.yaml from before controller types: `controller: esp-one-axis`
- * becomes `controller: talos`.
+ * becomes `controller: talos`. This is the only place the old value is understood.
  * (gaia.config.yaml is the team's file and was migrated in git.)
  */
 function migrateLocal() {

@@ -96,6 +96,9 @@ which crashes the MJPEG dashboard stream whenever a person is detected.
       Bluey's `telemetry: false`. No arm needs the flag; the `!pi.arm.telemetry` branch in
       `src/core/status.ts` stays for new setups whose controller has none.
 - Bluey's demo firmware lives on esp-driver branch `maker-fair-2026` (Aleck, temporary), not `main`.
+  Its limit-switch homing is off: HOME drives the arm back to wherever it was when the ESP powered
+  on, so pose the arm at home before powering the ESP. Revisit `homesOnStart` and the README's
+  custom-controller note when real homing returns.
 
 ## Where images get built (decided 2026-11-11: on the laptop)
 
