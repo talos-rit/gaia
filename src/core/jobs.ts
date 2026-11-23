@@ -21,14 +21,17 @@ interface BaseStep {
 export interface RemoteStep extends BaseStep {
   where: "remote";
   cmd: string;
+  /** The Pi to run on, for jobs that span several Pis (e.g. a multi-Pi deploy). Defaults to the job's Pi. */
+  pi?: PiCfg;
 }
 export interface LocalStep extends BaseStep {
   where: "local";
   run: Pipeline[];
 }
 
-export function displayStep(step: Step, pi?: PiCfg): string {
+export function displayStep(step: Step, jobPi?: PiCfg): string {
   if (step.display) return step.display;
+  const pi = step.where === "remote" ? (step.pi ?? jobPi) : jobPi;
   const base =
     step.where === "remote"
       ? pi
@@ -109,25 +112,26 @@ export class Job {
 
   /** Execute a Step (planning it if `index` is not given). Throws StepFailed on non-zero exit. */
   async run(step: Step, index?: number): Promise<RunResult> {
-    const i = index ?? this.plan(step.label, displayStep(step, this.pi));
+    const pi = (step.where === "remote" ? step.pi : undefined) ?? this.pi;
+    const i = index ?? this.plan(step.label, displayStep(step, pi));
     // Re-render once we know which address actually answered.
-    if (step.where === "remote" && this.pi) {
+    if (step.where === "remote" && pi) {
       try {
-        await target(this.pi);
+        await target(pi);
       } catch (e) {
         this.setStep(i, "failed");
         this.log(i, (e as Error).message, "stderr");
         throw new StepFailed(step.label, 255);
       }
     }
-    this.setStep(i, "running", displayStep(step, this.pi));
+    this.setStep(i, "running", displayStep(step, pi));
     const opts = {
       stdin: step.stdin,
       timeoutMs: step.timeoutMs,
       onLine: (line: string, stream: "stdout" | "stderr") => this.log(i, line, stream),
     };
-    if (step.where === "remote" && !this.pi) throw new Error(`remote step "${step.label}" without a Pi`);
-    const res = step.where === "remote" ? await runRemote(this.pi!, step.cmd, opts) : await runPipelines(step.run, opts);
+    if (step.where === "remote" && !pi) throw new Error(`remote step "${step.label}" without a Pi`);
+    const res = step.where === "remote" ? await runRemote(pi!, step.cmd, opts) : await runPipelines(step.run, opts);
     if (res.code !== 0 && !step.allowFail) {
       this.setStep(i, "failed");
       this.log(i, `exit code ${res.code}`, "info");

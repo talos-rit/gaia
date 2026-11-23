@@ -266,6 +266,7 @@ async function ship(job: Job, pi: PiCfg, image: string, imageId: string) {
   const check = await job.run({
     label: `${pi.name}: does the Pi already have ${image} (or some of its layers)?`,
     where: "remote",
+    pi,
     cmd:
       `echo "id=$(${D} image inspect --format '{{.Id}}' ${image} 2>/dev/null)"; ` +
       `ids=$(${D} images -q --no-trunc | sort -u); [ -z "$ids" ] || ${D} image inspect --format 'layers={{json .RootFS.Layers}}' $ids; true`,
@@ -371,9 +372,9 @@ export async function deploy(job: Job, cfg: Config, pis: PiCfg[], opts: DeployOp
 
   for (const pi of pis) {
     const clock = syncClock();
-    await job.run({ ...clock, label: `${pi.name}: ${clock.label}` });
+    await job.run({ ...clock, pi, label: `${pi.name}: ${clock.label}` });
     const rt = ensureRuntime(pi);
-    await job.run({ ...rt, label: `${pi.name}: ${rt.label}` });
+    await job.run({ ...rt, pi, label: `${pi.name}: ${rt.label}` });
     for (const c of COMPONENTS) await ship(job, pi, images[c], ids[c]);
     const manifest: Manifest = {
       deployedAt: new Date().toISOString(),
@@ -390,14 +391,16 @@ export async function deploy(job: Job, cfg: Config, pis: PiCfg[], opts: DeployOp
     await job.run({
       label: `${pi.name}: validate compose.yaml`,
       where: "remote",
+      pi,
       cmd: inStack(cfg, `${compose(pi)} config --quiet && echo "compose.yaml is valid"`),
     });
     if (opts.start) {
       // MediaMTX moved into the stack; the old host service would hold port 8554.
-      await job.run({ label: `${pi.name}: retire the host MediaMTX service, if any`, where: "remote", cmd: talos("retire-host-mediamtx") });
+      await job.run({ label: `${pi.name}: retire the host MediaMTX service, if any`, where: "remote", pi, cmd: talos("retire-host-mediamtx") });
       await job.run({
         label: `${pi.name}: preflight, then start (only containers whose image or config changed are recreated)`,
         where: "remote",
+        pi,
         cmd: talos("start"),
       });
     }
